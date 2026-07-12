@@ -1,0 +1,27 @@
+# Postgres para a Fase 3 (motor em produção).
+# O backtest (Fase 2) NÃO depende disto — ele lê o Parquet direto.
+#
+#   docker compose up -d
+#   dands db load        # carrega o Parquet no Postgres (a implementar na Fase 3)
+
+services:
+  db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: dands-db
+    environment:
+      POSTGRES_USER: dands
+      POSTGRES_PASSWORD: dands
+      POSTGRES_DB: dands
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dands"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:

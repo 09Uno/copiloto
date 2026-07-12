@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Dado bruto ingerido: reprodutível via `dands backfill`, não versionar
+data/
+
+node_modules/
+dist/
+.DS_Store

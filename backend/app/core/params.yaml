@@ -1,0 +1,37 @@
+# Hiperparâmetros do motor — SPEC.md §7
+#
+# Estes valores são um PONTO DE PARTIDA, não uma configuração final.
+# A calibração é OUTPUT da Fase 2 (backtest), nunca input.
+# Toda mudança aqui invalida o backtest anterior: suba a engine_version junto.
+
+engine_version: "0.1.0-rule"
+
+regressao:
+  janela: 100 # velas
+  base: log_preco
+
+bandas:
+  janela_media: 20
+  n_sigma_entrada: 2.0
+
+regime:
+  r2_max_lateral: 0.30 # acima disso = TENDENCIA → não opera reversão
+
+volume:
+  janela_zscore: 50
+  z_minimo: 2.0
+  base: log_volume
+
+risco:
+  atr_janela: 14
+  stop_atr_mult: 1.5
+  rr_minimo: 2.0 # descarta o sinal se TP_dist < 2 × SL_dist
+  horizonte_max: # barreira temporal do triple-barrier, em velas
+    15m: 24 # ~6h
+    1d: 10 # 10 pregões
+
+custos: # percentuais, por perna da operação
+  cripto_taker_pct: 0.10
+  acoes_br_pct: 0.05
+  acoes_us_pct: 0.00
+  slippage_pct: 0.05
