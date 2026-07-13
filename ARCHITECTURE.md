@@ -13,8 +13,9 @@ a **ordem** de construção em [development_plan.md](development_plan.md).
 | API | FastAPI + Uvicorn + SQLAlchemy async + Pydantic | Leitura do estado; auth por token único (uso próprio). |
 | Workers | Python (pandas, numpy, scikit-learn) | Ingestão, cálculo de features, avaliação de desfecho. |
 | Scheduler | **APScheduler** dentro do processo worker | Ver §2. |
-| Banco | **Supabase** (Postgres gerenciado) | Camada de **serviço**: API e dashboard leem dele. |
+| Banco | **Supabase** (Postgres 17 + `pgvector`) | Camada de **serviço**: API e dashboard leem dele. |
 | Dado bruto | **Parquet** local (`data/`) | Camada de **aterrissagem**: imutável, reprodutível. |
+| Alertas | **Telegram** (bot) | O canal que te encontra. O dashboard não vigia; ele investiga. |
 
 ### Sobre o armazenamento em duas camadas
 O dado bruto vive em Parquet e o Postgres é alimentado a partir dele (`dands db load`).
@@ -181,107 +182,54 @@ código** — se forem implementações diferentes, os resultados divergem e o b
 
 ---
 
-## 5. Schema (DDL)
+## 5. Schema
 
-Decisões que diferem do rascunho inicial, e o porquê:
+**Fonte única: [infra/schema.sql](infra/schema.sql)** — Postgres puro, idempotente, aplicado por
+`dands db init`. Este documento não duplica o DDL: uma segunda cópia diverge da primeira no dia em
+que alguém esquece de atualizá-la, e aí ninguém sabe qual é a verdadeira.
 
-- **`TIMESTAMPTZ` em tudo, gravado em UTC.** B3 + EUA + cripto = três fusos, com o horário de verão
-  americano mudando o offset duas vezes por ano. `TIMESTAMP` sem fuso é o bug que só aparece em
-  novembro e corrompe meses de série histórica.
-- **Sem `users` / `watchlists` / billing** — uso próprio. Watchlist é um booleano em `assets`.
-- **`UNIQUE (ticker, market_type)`**, não `ticker` global: o mesmo ticker pode existir em mercados
-  diferentes. `VARCHAR(20)` para caber opções da B3.
-- **Chave natural em `asset_prices`** — `(asset_id, timeframe, timestamp)` já é a PK; o `BIGSERIAL`
-  era um índice a mais sem função.
-- **`model_version` / `engine_version` em todo score gerado.** Sem isso, retreinar o modelo de
-  sentimento invalida silenciosamente o histórico e o dataset de treino vira uma mistura inútil de gerações.
-- **`alert_evidence`** — liga o alerta aos posts que o motivaram. Sem essa tabela, a tela de
-  justificativa é literalmente não implementável.
-- **Particionamento por tempo desde o início.** Migrar depois dói.
+Aqui ficam as **decisões** e o porquê de cada uma.
 
-```sql
-CREATE TABLE assets (
-    id            SERIAL PRIMARY KEY,
-    ticker        VARCHAR(20) NOT NULL,
-    market_type   VARCHAR(20) NOT NULL,           -- 'B3' | 'US' | 'CRYPTO'
-    name          VARCHAR(120) NOT NULL,
-    is_watchlist  BOOLEAN NOT NULL DEFAULT FALSE,
-    timeframes    TEXT[] NOT NULL DEFAULT '{1d}', -- timeframes habilitados
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_asset UNIQUE (ticker, market_type)
-);
+| Tabela | Papel |
+|---|---|
+| `assets` | Universo monitorado. `currency` roteia o trade para a banca certa. |
+| `asset_prices` | OHLCV. Espelho do Parquet, para a API ler. |
+| `market_alerts` | O que o motor **sugeriu** + features + desfecho da barreira tripla. |
+| `alert_evidence` | Liga o alerta aos posts que o motivaram (a tela do "porquê"). |
+| `forum_scraped_data` | Texto minerado + sentimento (Fase 5). |
+| `accounts` | A banca — **uma por moeda** (SPEC §8.1). |
+| `trades` | O que **executou** de verdade. A diferença vs. `market_alerts` é o slippage. |
+| `equity_snapshots` | Fecho diário → ganho no período e **drawdown real**. |
+| `fx_rates` | USDBRL, só para a visão consolidada. |
 
-CREATE TABLE asset_prices (
-    asset_id    INT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
-    timeframe   VARCHAR(5) NOT NULL,              -- '15m' | '1d'
-    timestamp   TIMESTAMPTZ NOT NULL,             -- SEMPRE UTC
-    open_price  NUMERIC(18, 8) NOT NULL,
-    high_price  NUMERIC(18, 8) NOT NULL,
-    low_price   NUMERIC(18, 8) NOT NULL,
-    close_price NUMERIC(18, 8) NOT NULL,
-    volume      NUMERIC(24, 4) NOT NULL,
-    PRIMARY KEY (asset_id, timeframe, timestamp)
-) PARTITION BY RANGE (timestamp);
+### As decisões que não são óbvias
 
-CREATE TABLE forum_scraped_data (
-    id               BIGSERIAL PRIMARY KEY,
-    asset_id         INT REFERENCES assets(id) ON DELETE CASCADE,
-    source           VARCHAR(50) NOT NULL,
-    external_id      VARCHAR(120),                -- id na origem → dedupe
-    post_timestamp   TIMESTAMPTZ NOT NULL,
-    content_text     TEXT NOT NULL,
-    language         VARCHAR(5) NOT NULL,         -- 'pt' | 'en' → decide o modelo NLP
-    sentiment_score  NUMERIC(4, 3),               -- NULL até ser pontuado
-    sentiment_model  VARCHAR(40),                 -- 'finbert-v1' | 'bertimbau-fin-v2'
-    engagement_count INT NOT NULL DEFAULT 0,
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_post UNIQUE (source, external_id)
-);
-CREATE INDEX idx_forum_asset_time ON forum_scraped_data(asset_id, post_timestamp DESC);
+**`TIMESTAMPTZ` em tudo, gravado em UTC.** B3 + EUA + cripto são três fusos, e o horário de verão
+americano move o offset duas vezes por ano. `TIMESTAMP` sem fuso é o bug que só aparece em novembro
+e corrompe meses de série.
 
-CREATE TABLE market_alerts (
-    id                   BIGSERIAL PRIMARY KEY,
-    asset_id             INT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
-    timeframe            VARCHAR(5) NOT NULL,
-    timestamp            TIMESTAMPTZ NOT NULL,
-    engine_version       VARCHAR(20) NOT NULL,
-    is_backtest          BOOLEAN NOT NULL DEFAULT FALSE,
+**Chave natural em `asset_prices`** — `(asset_id, timeframe, timestamp)` já é a PK. O `BIGSERIAL`
+do rascunho original era um índice a mais sem função nenhuma.
 
-    -- Features (SPEC §2)
-    close_price_at_alert NUMERIC(18, 8) NOT NULL,
-    regression_slope     NUMERIC(12, 8) NOT NULL, -- sobre LOG-preço
-    regression_r2        NUMERIC(5, 4) NOT NULL,  -- separa regime
-    deviation_from_mean  NUMERIC(6, 3) NOT NULL,
-    volume_z_score       NUMERIC(6, 3) NOT NULL,  -- sobre LOG-volume
-    atr                  NUMERIC(18, 8) NOT NULL,
-    aggregated_sentiment NUMERIC(4, 3),           -- NULL quando não há dado textual
-    market_regime        VARCHAR(15) NOT NULL,    -- 'LATERAL' | 'TENDENCIA' | 'NERVOSO'
+**`UNIQUE (ticker, market_type)`**, não `ticker` global: o mesmo ticker pode existir em mercados
+diferentes. `VARCHAR(20)` para caber opções da B3.
 
-    -- Saída (SPEC §3-§4)
-    calculated_score     INT NOT NULL,
-    alert_type           VARCHAR(10) NOT NULL,    -- 'BUY' | 'SELL'
-    trigger_price        NUMERIC(18, 8) NOT NULL,
-    take_profit_price    NUMERIC(18, 8) NOT NULL,
-    stop_loss_price      NUMERIC(18, 8) NOT NULL,
+**`engine_version` / `sentiment_model` em todo score gerado.** Sem isso, retreinar o modelo invalida
+o histórico **em silêncio**: o dataset de treino vira uma mistura de gerações incomparáveis, e nada
+no banco denuncia isso.
 
-    -- Triple barrier (SPEC §5)
-    outcome              VARCHAR(15),             -- 'TP'|'SL'|'TIMEOUT'| NULL = aberto
-    outcome_return       NUMERIC(8, 4),           -- % LÍQUIDO de custos
-    max_return_reached   NUMERIC(8, 4),
-    closed_at            TIMESTAMPTZ,
+**`UNIQUE (alert_id)` em `trades`** — clicar "Confirmar" duas vezes não duplica a posição.
 
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX idx_alerts_training ON market_alerts(outcome) WHERE outcome IS NOT NULL;
-CREATE INDEX idx_alerts_open     ON market_alerts(asset_id) WHERE outcome IS NULL;
+**Barreiras (`take_profit`, `stop_loss`) são níveis do MERCADO.** Não se movem porque seu
+preenchimento foi pior; o que piora é o `rr_real`, recalculado no fill (SPEC §8.3).
 
-CREATE TABLE alert_evidence (
-    alert_id BIGINT NOT NULL REFERENCES market_alerts(id) ON DELETE CASCADE,
-    post_id  BIGINT NOT NULL REFERENCES forum_scraped_data(id) ON DELETE CASCADE,
-    weight   NUMERIC(5, 4) NOT NULL,              -- contribuição no sentimento agregado
-    PRIMARY KEY (alert_id, post_id)
-);
-```
+**Sem TimescaleDB e sem particionamento.** O Supabase não oferece a extensão, e particionar ~300k
+linhas numa ferramenta de uso próprio é otimização prematura. Um índice **BRIN** em `timestamp`
+— feito exatamente para dado inserido em ordem cronológica — dá o ganho a custo quase zero.
+
+**`state_vector vector(5)` + HNSW** (pgvector). As 5 features são **adimensionais por construção**:
+se fosse preciso *ajustar* um normalizador sobre o histórico para montar o vetor, o próprio
+normalizador veria o futuro. O kNN só pode olhar vizinhos **estritamente anteriores** (SPEC §9).
 
 ---
 
@@ -294,10 +242,20 @@ Auth: token estático único no header (uso próprio — OAuth seria cerimônia 
 | `GET` | `/api/v1/assets` | Ativos monitorados |
 | `POST` | `/api/v1/assets` | Adiciona ticker à watchlist |
 | `GET` | `/api/v1/dashboard/watchlist` | Estado estatístico dos ativos (σ, regime, z-score de volume) |
-| `GET` | `/api/v1/alerts/active` | Alertas com `outcome IS NULL` + score + TP/SL |
-| `GET` | `/api/v1/alerts/{id}/justification` | Features + posts via `alert_evidence` (a tela do "porquê") |
-| `GET` | `/api/v1/performance` | Curva de equity real do motor vs. o backtest |
+| `GET` | `/api/v1/alerts/active` | Alertas abertos + score + TP/SL + **qty sugerida** (sizing) |
+| `GET` | `/api/v1/alerts/{id}/justification` | Features, posts (`alert_evidence`) e a **analogia histórica** (kNN, SPEC §9) |
 | `GET` | `/api/v1/stream` | **SSE** — empurra alerta novo e preço para o dashboard aberto |
+
+**Carteira (SPEC §8)**
+
+| Método | Rota | Função |
+|---|---|---|
+| `GET` | `/api/v1/accounts` | Bancas (BRL / USD) + caixa + risco por operação |
+| `POST` | `/api/v1/alerts/{id}/confirm` | **O botão Confirmar.** Recebe o preenchimento *real* (preço, qty) → cria o `trade`, recalcula o `rr_real` e **avisa se caiu abaixo do mínimo** (§8.3). Idempotente por `UNIQUE (alert_id)`. |
+| `POST` | `/api/v1/trades/{id}/close` | Encerra a posição (preço e motivo de saída reais) |
+| `GET` | `/api/v1/trades` | Operações, abertas e fechadas |
+| `GET` | `/api/v1/portfolio` | Ganho hoje / semana / mês / ano, em % e valor, por banca e consolidado |
+| `GET` | `/api/v1/performance` | Curva de equity **real** vs. a do backtest + drawdown |
 
 Se as duas curvas de `/performance` divergirem muito, **há lookahead no backtest** — é o canário
 mais barato que existe para esse bug.

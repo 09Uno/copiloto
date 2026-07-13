@@ -143,6 +143,8 @@ melhorá-lo com texto, senão não há como medir se o texto ajudou.
 Valores **iniciais**. A calibração é *output* da Fase 2 (backtest), não input.
 
 ```yaml
+engine_version: "0.1.0-rule"   # toda mudança abaixo invalida o backtest anterior — suba junto
+
 regressao:
   janela: 100            # velas
   base: log_preco
@@ -162,11 +164,18 @@ risco:
   horizonte_max:
     15m: 24              # velas (~6h)
     1d: 10               # dias
-custos:
+custos:                  # por perna da operação
   cripto_taker_pct: 0.10
   acoes_br_pct: 0.05
-  slippage_pct: 0.05
+  acoes_us_pct: 0.00
+  slippage_pct: 0.05     # ← chute. A Fase 4 mede o slippage REAL e substitui (§8.4).
 ```
+
+Fonte única: [backend/app/core/params.yaml](backend/app/core/params.yaml).
+
+O **risco por operação** (o `1%` da fórmula de sizing em §8.2) **não** está aqui — ele é por banca
+(`accounts.risk_per_trade_pct`), porque é decisão de capital, não do motor:
+`dands db account BRL --saldo <x> --risco 1.0`.
 
 ---
 

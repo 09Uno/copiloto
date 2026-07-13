@@ -29,6 +29,7 @@ dands show BTCUSDT 15m
 
 dands db init                 # aplica infra/schema.sql no Supabase (idempotente)
 dands db load                 # carrega o Parquet no Postgres (upsert por vela)
+dands db account BRL --saldo 10000 --risco 1.0   # banca por moeda + sizing (SPEC §8)
 
 pytest
 ```
