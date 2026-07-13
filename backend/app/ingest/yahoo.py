@@ -56,6 +56,24 @@ def fetch_daily(asset: Asset, inicio: datetime, fim: datetime | None = None) -> 
     )
 
 
+def close_series(asset: Asset) -> pd.Series:
+    """Fechamento histórico completo, só como REFERÊNCIA de reconciliação (corporate.reconcile).
+
+    O `Close` do Yahoo já vem ajustado por desdobramento. Comparar a nossa série contra ela
+    revela os eventos que a lista de splits do Yahoo omite — ela é inconsistente com o preço
+    dele mesmo. Série vazia quando o Yahoo não tem o papel: aí sobra só o alarme de saltos.
+    """
+    try:
+        h = yf.Ticker(asset.ticker).history(period="max", interval="1d", auto_adjust=False)
+    except Exception:  # noqa: BLE001 — sem referência, seguimos sem reconciliar
+        return pd.Series(dtype=float)
+
+    if h.empty or "Close" not in h:
+        return pd.Series(dtype=float)
+
+    return pd.Series(h["Close"].to_numpy(dtype=float), index=pd.DatetimeIndex(h.index))
+
+
 def fetch(asset: Asset, tf: Timeframe, inicio: datetime, fim: datetime | None = None):
     if tf is not Timeframe.D1:
         raise ValueError(

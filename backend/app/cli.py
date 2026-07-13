@@ -148,6 +148,87 @@ def show(ticker: str, timeframe: str = "1d", n: int = 10) -> None:
 
 
 @app.command()
+def cotahist_b3(
+    anos: int = typer.Option(20, help="Profundidade, em anos."),
+) -> None:
+    """Ingere a B3 pela série histórica OFICIAL (COTAHIST), com ajuste de evento corporativo.
+
+    Substitui o Yahoo como fonte da B3. Duas razões:
+      · o Yahoo mente ("possibly delisted" para a Embraer) e não tem SLA;
+      · o COTAHIST traz TODO papel que negociou — inclusive os que morreram, que é o que
+        conserta o viés de sobrevivência do backtest.
+
+    O preço do COTAHIST é BRUTO. Sem o ajuste por bonificação/desdobramento, o BBAS3 exibiria
+    um "crash de -50%" fantasma no dia do split, e o motor dispararia uma compra enorme e falsa.
+    """
+    import pandas as pd
+
+    from app.ingest import corporate, cotahist
+
+    ano_fim = datetime.now(UTC).year
+    lista = list(range(ano_fim - anos + 1, ano_fim + 1))
+
+    console.print(f"[bold]COTAHIST[/bold] · {lista[0]}–{lista[-1]}\n[dim]baixando…[/dim]")
+    bruto = cotahist.load(lista)
+    if bruto.empty:
+        console.print("[red]nada baixado[/red]")
+        raise typer.Exit(1)
+
+    console.print(
+        f"[dim]{len(bruto):,} registros · {bruto['ticker'].nunique():,} tickers na bolsa[/dim]\n"
+    )
+
+    por_ticker = {t: g for t, g in bruto.groupby("ticker")}
+    total, ajustados, reconciliados, alarmes = 0, 0, 0, []
+
+    for asset in watchlist(Market.B3):
+        base = asset.ticker.removesuffix(".SA")
+        g = por_ticker.get(base)
+        if g is None or g.empty:
+            console.print(f"  [red]![/red] {base}: ausente no COTAHIST")
+            continue
+
+        g = g.sort_values("timestamp").reset_index(drop=True)
+        eventos = corporate.splits(asset.ticker)
+        df = corporate.adjust(g, eventos)
+
+        # A lista de splits do Yahoo é inconsistente com o preço DELE MESMO (o MGLU3 tinha um
+        # evento de 6,9% em 2024 que ele aplica no preço mas não declara). Um degrau na razão
+        # entre as duas séries denuncia o evento omitido — e um buraco de 6,9% não dispara o
+        # alarme de 25%, mas é um falso movimento de 1-2σ.
+        ref = yahoo.close_series(asset)
+        if (faltantes := corporate.reconcile(df, ref)) is not None and len(faltantes):
+            eventos = pd.concat([eventos, faltantes]).sort_index()
+            df = corporate.adjust(g, eventos)
+            reconciliados += len(faltantes)
+
+        if len(eventos):
+            ajustados += 1
+
+        suspeitos = corporate.jumps_nao_explicados(df, eventos)
+        if len(suspeitos):
+            alarmes.append((base, len(suspeitos)))
+
+        # Troca de fonte: o Yahoo carimbava 03:00 UTC, o COTAHIST 00:00. Sem apagar,
+        # cada pregão viraria DUAS velas e o motor calcularia sobre uma série dobrada.
+        store.purge(asset, Timeframe.D1)
+        total += store.upsert(asset, Timeframe.D1, df)
+
+    console.print(
+        f"\n[bold green]{total:,}[/bold green] velas · "
+        f"[dim]{ajustados} ativos com evento corporativo ajustado · "
+        f"{reconciliados} eventos que o Yahoo OMITIA, recuperados pelo degrau da razão[/dim]"
+    )
+    if alarmes:
+        console.print(
+            "\n[yellow]Saltos NÃO explicados por evento conhecido "
+            "(evento corporativo que o Yahoo não conhece, ou notícia real):[/yellow]"
+        )
+        for tk, n in sorted(alarmes, key=lambda x: -x[1])[:15]:
+            console.print(f"  {tk}: {n}")
+
+
+@app.command()
 def preview(
     ticker: str = typer.Argument(..., help="Ex: BTCUSDT"),
     timeframe: str = typer.Argument("1d"),

@@ -87,6 +87,17 @@ def last_timestamp(asset: Asset, tf: Timeframe) -> pd.Timestamp | None:
     return None if df.empty else df["timestamp"].iloc[-1]
 
 
+def purge(asset: Asset, tf: Timeframe) -> None:
+    """Apaga a série. Necessário ao TROCAR de fonte.
+
+    O Yahoo carimbava o pregão às 03:00 UTC; o COTAHIST, às 00:00. Fundir as duas fontes
+    criaria DUAS velas por pregão — e o motor calcularia tudo sobre uma série com o dobro
+    de linhas, silenciosamente errada.
+    """
+    p = path_for(asset, tf)
+    p.unlink(missing_ok=True)
+
+
 def span(asset: Asset, tf: Timeframe) -> tuple[pd.Timestamp, pd.Timestamp] | None:
     """(primeira, última) vela armazenada. None se a série não existe."""
     df = read(asset, tf)
