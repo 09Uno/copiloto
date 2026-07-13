@@ -229,6 +229,65 @@ def cotahist_b3(
 
 
 @app.command()
+def valor(
+    market: Market = typer.Option(Market.B3, help="B3 ou US."),
+    top: int = typer.Option(15, help="Quantos exibir."),
+) -> None:
+    """Triagem fundamentalista: o que está barato PARA CARREGAR (SPEC §12).
+
+    Pergunta diferente do resto do motor. A reversão pergunta "vai repicar em 10 pregões?";
+    esta é sobre anos. Não é conselho de compra — é uma lista do que merece ler o balanço.
+    """
+    from app.engine import value
+    from app.ingest import fundamentals
+
+    ativos = watchlist(market)
+    console.print(f"[bold]Triagem fundamentalista[/bold] · {market.value} · {len(ativos)} papéis")
+    console.print("[dim]buscando fundamentos…[/dim]\n")
+
+    avaliacoes = []
+    for a in ativos:
+        f = fundamentals.fetch(a)
+        precos = store.read(a, Timeframe.D1)
+        hist = precos["close"] if not precos.empty else None
+        if (av := value.avaliar(f, hist)) is not None:
+            avaliacoes.append(av)
+
+    if not avaliacoes:
+        console.print("[yellow]nenhum papel com LPA e VPA disponíveis[/yellow]")
+        raise typer.Exit(1)
+
+    avaliacoes.sort(key=lambda x: -x.score)
+
+    t = Table("Papel", "Preço", "Graham", "Margem", "P/L", "P/VP", "vs. própria história",
+              "Score")
+    for av in avaliacoes[:top]:
+        cor = "green" if av.score >= 60 else ("yellow" if av.score >= 35 else "dim")
+        t.add_row(
+            av.ticker.removesuffix(".SA"),
+            f"{av.preco:.2f}",
+            f"{av.graham:.2f}" if av.graham else "—",
+            f"[{cor}]{av.margem_graham:+.0f}%[/{cor}]" if av.margem_graham else "—",
+            f"{av.pl:.1f}" if av.pl else "—",
+            f"{av.pvp:.2f}" if av.pvp else "—",
+            f"{av.desconto_vs_historia:+.0f}%" if av.desconto_vs_historia else "—",
+            f"[{cor}]{av.score}[/{cor}]",
+        )
+    console.print(t)
+    console.print(
+        f"[dim]{len(avaliacoes)} papéis avaliados · "
+        "margem = desconto contra o valor intrínseco de Graham[/dim]"
+    )
+
+    com_alerta = [av for av in avaliacoes[:top] if av.alertas]
+    if com_alerta:
+        console.print("\n[yellow]Ressalvas contábeis:[/yellow]")
+        for av in com_alerta:
+            for x in av.alertas:
+                console.print(f"  [dim]{av.ticker.removesuffix('.SA')}:[/dim] {x}")
+
+
+@app.command()
 def universo_b3(
     top: int = typer.Option(120, help="Quantos papéis compõem o universo em cada mês."),
     anos: int = typer.Option(20),

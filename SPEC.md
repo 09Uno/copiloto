@@ -12,14 +12,30 @@ sem distribuição de sinais a terceiros.
 
 O motor é **um só**. O que muda por mercado é o conector de ingestão e o timeframe habilitado.
 
-| Mercado | Fonte | Day Trade (15m) | Swing (1d) | Longo Prazo |
+| Mercado | Fonte de preço | Day Trade (15m) | Swing (1d) | Longo Prazo |
 |---|---|---|---|---|
-| Cripto | Binance (REST + WebSocket) | ✅ tempo real | ✅ | ⚠️ sem fundamentos clássicos |
-| Ações EUA | yfinance | ❌ delay de 15min inviabiliza reversão intradiária | ✅ EOD | ✅ balanços via yfinance |
-| Ações B3 | brapi.dev (primário), yfinance (fallback) | ❌ delay + cobertura intraday ruim | ✅ EOD | ✅ |
-| Opções | — | — | — | ⚠️ grade de opções não tem fonte gratuita confiável; reavaliar antes de investir tempo |
+| Cripto | **Binance** (REST + WebSocket) | ✅ tempo real | ✅ | ⚠️ sem fundamentos clássicos |
+| Ações B3 | **COTAHIST** (série oficial da B3) | ❌ (ver abaixo) | ✅ 20 anos | ✅ |
+| Ações EUA | yfinance | ❌ delay de 15min inviabiliza reversão intradiária | ✅ 20 anos | ✅ |
+| Fundamentos | yfinance | — | — | ✅ (com ressalva, §12) |
+| Opções | — | — | — | ⚠️ a grade não tem fonte gratuita confiável; reavaliar antes de investir tempo |
 
-Nenhuma fonte tem SLA. O ingestor trata falha, gap e backfill como caso **normal**, não como exceção.
+**Por que COTAHIST e não Yahoo na B3.** O Yahoo reporta a Embraer, a JBS e a Eletrobras como
+*"possibly delisted"* — o que é simplesmente falso — e não tem SLA. O COTAHIST é a série oficial
+da bolsa, vai a décadas e traz **todo papel que já negociou, inclusive os mortos**, que é o que
+torna o universo point-in-time possível (§11).
+
+> **O preço do COTAHIST é BRUTO**, sem ajuste por desdobramento. Sem a camada de ajuste, o split
+> 1:2 do BBAS3 vira um "crash de −50%" fantasma — o motor dispararia uma compra enorme e falsa.
+> Não parece um bug: **parece um sinal**. O volume lido é o FINANCEIRO (R$), que é invariante a
+> desdobramento.
+
+**Nenhuma fonte tem SLA.** O ingestor trata falha, gap e backfill como caso **normal**, não como
+exceção — e denuncia o salto de preço que nenhum evento conhecido explica, em vez de engoli-lo.
+
+**Tempo real em ação é possível, mas ainda não implementado:** o MetaTrader 5 da corretora
+entrega cotação da B3 sem delay para correntista (pacote `MetaTrader5`, Windows). Isso derrubaria
+a limitação do day trade em ação. Fase 3.
 
 ---
 
@@ -287,11 +303,78 @@ contaria 20 vezes e inflaria o pânico. Sem isso, o `aggregated_sentiment` estar
 
 ---
 
-## 10. Longo prazo / fundamentalista (Fase 7)
+## 10. As três estratégias
 
-Independente do motor de reversão — pode ser desenvolvido em paralelo.
+O motor abriga três estratégias que respondem a **perguntas diferentes**. Cada alerta grava
+qual delas o gerou (`market_alerts.strategy`) — sem isso os datasets se misturam e o ML da
+Fase 6 treinaria em maçãs com laranjas.
 
-- Balanços trimestrais via `yfinance` (`.financials`, `.balance_sheet`).
-- Modelos clássicos: Graham, Gordon, múltiplos (P/L, EV/EBITDA) comparados contra a **mediana
-  histórica do próprio ativo** e contra o setor.
-- Sem ML. É aritmética contábil — e é explicável por construção.
+| `strategy` | Pergunta | Onde funciona |
+|---|---|---|
+| `MEAN_REV` | "esse papel esticou demais e deve repicar?" (§3) | Cripto 15m. Em ação diária, gera pouquíssimo sinal. |
+| `XSECT` | "entre 180 papéis, quais destoaram do pelotão nesta semana?" (§11) | **Ações.** É o que funciona em bolsa. |
+| `VALUE` | "essa ação está barata para carregar por anos?" (§12) | Ações. Horizonte de anos, não de pregões. |
+
+---
+
+## 11. Reversão cross-sectional (`XSECT`)
+
+A reversão do §3 é **absoluta**: espera cada papel cruzar ±2σ da própria média. No diário isso
+quase não acontece — e é uma borda historicamente fraca em ação individual.
+
+O que funciona em bolsa é **relativo**: rankear o universo inteiro e operar os extremos. Não
+importa que a VALE tenha caído 4%; importa que ela caiu 4% num dia em que a bolsa caiu 1%. O
+**excesso** de queda é que reverte.
+
+```
+excesso_i = retorno_i(N pregões) − mediana(retorno de todo o universo)
+```
+
+Compra os `n_extremos` de menor excesso; vende os de maior.
+
+**A neutralização não é detalhe.** Sem subtrair a mediana do universo, num crash geral a
+estratégia compraria 10 papéis de uma vez — estaria comprando o *índice*, não a distorção, e o
+"alfa" seria beta disfarçado. Usa-se a **mediana** e não a média: um papel que caiu 60% não pode
+arrastar a referência.
+
+**Alvo e stop saem do ATR**, com o alvo a `rr_minimo ×` a distância do stop — o R:R do §4 vale
+**por construção**, não há o que descartar depois. Aqui a tese não é "voltar à própria média", é
+"voltar ao pelotão".
+
+**É o que resolve a fome de amostra do diário:** 650 sinais de `MEAN_REV` em 19 anos contra
+**16.129** de `XSECT` — um ranking sempre tem um último colocado.
+
+### O universo é POINT-IN-TIME
+
+Em cada rebalanceamento, o universo é quem era líquido **naquela data**, reconstruído do COTAHIST
+(mediana móvel de 60 pregões do volume financeiro).
+
+> **É o conserto do viés de sobrevivência**, e ele era enorme: **373 papéis** já pertenceram ao
+> universo líquido da B3, e **283 deles não existem na watchlist de hoje** — 76% da amostra era
+> invisível. E os invisíveis são AMER3 (a fraude), ARCZ6 (a Aracruz que explodiu em derivativos
+> em 2008), AMIL3, ALLL3. Exatamente os que dariam prejuízo. Rodar o backtest sobre "os líquidos
+> de hoje" não superestima o retorno por pouco.
+
+---
+
+## 12. Valor / fundamentalista (`VALUE`)
+
+"Esta ação está barata para **carregar**?" — horizonte de anos, não de pregões. Independente do
+motor de reversão; roda em paralelo.
+
+- **Graham:** `√(22.5 × LPA × VPA)`. Só com lucro e patrimônio positivos — raiz de número
+  negativo não é "empresa barata", é empresa que perde dinheiro.
+- **Gordon:** `D / (k − g)`, recusado quando `g` se aproxima de `k`. Um modelo que devolve valor
+  infinito porque alguém supôs crescimento eterno de 9,5% com desconto de 10% não é modelo, é
+  divisão por quase-zero.
+- **Múltiplos contra a própria história:** o P/L da Vale contra o do Itaú não diz nada — setores
+  têm múltiplos estruturalmente diferentes. Contra a mediana da própria Vale de 10 anos, diz muito.
+- **ROE como antídoto da armadilha de valor:** uma empresa pode estar 60% abaixo de Graham porque
+  o lucro vai evaporar. Desconto sem qualidade não é oportunidade, é aviso.
+- **Sem ML.** É aritmética contábil — e isso é virtude: cada número pode ser conferido à mão, que
+  é o que se quer quando a decisão imobiliza capital por anos.
+
+**Limitação declarada:** o `yfinance` entrega o balanço de HOJE, não o que estava publicado em
+2015, e revisa números retroativamente. **Não há backtest fundamentalista honesto com essa fonte** —
+teria lookahead embutido. Por isso `VALUE` avalia o presente e **não entra na esteira de rótulos
+do ML** enquanto não houver histórico point-in-time de balanços.
