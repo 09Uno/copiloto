@@ -91,3 +91,18 @@ def test_vela_sem_preco_e_descartada_mas_volume_zero_e_legitimo():
 def test_serie_inexistente_le_como_vazia_e_nao_explode():
     assert store.read(ASSET, Timeframe.D1).empty
     assert store.last_timestamp(ASSET, Timeframe.D1) is None
+    assert store.span(ASSET, Timeframe.D1) is None
+
+
+def test_span_expoe_o_inicio_da_serie_para_o_backfill_saber_estender_para_tras():
+    """O backfill precisa saber ONDE a série começa, não só onde termina.
+
+    Retomando só da última vela, uma série curta nunca ganha histórico: ela avança para a
+    frente para sempre e continua curta. Foi exatamente esse o bug que deixou 7 tickers com
+    3 anos enquanto os novos vinham com 20.
+    """
+    store.upsert(ASSET, Timeframe.D1, _velas("2024-01-01", 5))
+    primeiro, ultimo = store.span(ASSET, Timeframe.D1)
+
+    assert primeiro == pd.Timestamp("2024-01-01", tz="UTC")
+    assert ultimo == pd.Timestamp("2024-01-05", tz="UTC")

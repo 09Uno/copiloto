@@ -55,11 +55,16 @@ def backfill(
     for asset in ativos:
         for tf in asset.timeframes:
             inicio = horizonte
-            if not full:
-                ultimo = store.last_timestamp(asset, tf)
-                if ultimo is not None:
-                    # Retoma da última vela (e não da seguinte): reescrevê-la é barato
-                    # e cobre o caso de ela ter sido gravada ainda em formação.
+            if not full and (janela := store.span(asset, tf)):
+                primeiro, ultimo = janela
+                # Se a série já começa DEPOIS do horizonte pedido, o histórico precisa ser
+                # estendido para TRÁS — retomar da última vela só avançaria para a frente e
+                # a série ficaria eternamente curta. (Foi assim que os 7 tickers originais
+                # continuaram com 3 anos enquanto os novos vinham com 20.)
+                margem = timedelta(days=7)
+                if primeiro <= horizonte + margem:
+                    # Retoma da última vela (e não da seguinte): reescrevê-la é barato e
+                    # cobre o caso de ela ter sido gravada ainda em formação.
                     inicio = max(horizonte, ultimo.to_pydatetime())
 
             try:
@@ -160,8 +165,8 @@ def preview(
     if asset is None:
         raise typer.BadParameter(f"{ticker} não está na watchlist")
 
-    p = load_params()
     tf = Timeframe(timeframe)
+    p = load_params(asset.market, tf)  # perfil do ativo, não parâmetro global
     df = store.read(asset, tf)
     if df.empty:
         raise typer.BadParameter("série vazia — rode `dands backfill`")

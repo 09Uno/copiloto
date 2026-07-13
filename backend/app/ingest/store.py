@@ -85,3 +85,11 @@ def last_timestamp(asset: Asset, tf: Timeframe) -> pd.Timestamp | None:
     """Última vela armazenada — ponto de retomada do backfill incremental."""
     df = read(asset, tf)
     return None if df.empty else df["timestamp"].iloc[-1]
+
+
+def span(asset: Asset, tf: Timeframe) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+    """(primeira, última) vela armazenada. None se a série não existe."""
+    df = read(asset, tf)
+    if df.empty:
+        return None
+    return df["timestamp"].iloc[0], df["timestamp"].iloc[-1]

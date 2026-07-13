@@ -63,6 +63,12 @@ CREATE TABLE IF NOT EXISTS market_alerts (
     engine_version       VARCHAR(20) NOT NULL,
     is_backtest          BOOLEAN     NOT NULL DEFAULT FALSE,
 
+    -- Qual estratégia gerou este alerta. SEM isto, os datasets das três se misturam e o ML
+    -- da Fase 6 treinaria em maçãs com laranjas — 'esta ação vai repicar em 10 pregões' e
+    -- 'esta ação está barata para carregar 3 anos' não são a mesma pergunta.
+    strategy             VARCHAR(15) NOT NULL DEFAULT 'MEAN_REV',
+    -- 'MEAN_REV' | 'XSECT' | 'VALUE'
+
     -- Features (SPEC §2)
     close_price_at_alert NUMERIC(18, 8) NOT NULL,
     regression_slope     NUMERIC(12, 8) NOT NULL,  -- sobre LOG-preço
@@ -87,10 +93,13 @@ CREATE TABLE IF NOT EXISTS market_alerts (
     closed_at            TIMESTAMPTZ,
 
     created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_alert UNIQUE (asset_id, timeframe, timestamp, engine_version, is_backtest)
+    CONSTRAINT uq_alert
+        UNIQUE (asset_id, timeframe, timestamp, engine_version, strategy, is_backtest)
 );
+ALTER TABLE market_alerts ADD COLUMN IF NOT EXISTS strategy VARCHAR(15) NOT NULL
+    DEFAULT 'MEAN_REV';
 CREATE INDEX IF NOT EXISTS idx_alerts_training
-    ON market_alerts(outcome) WHERE outcome IS NOT NULL;
+    ON market_alerts(strategy, outcome) WHERE outcome IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_alerts_open
     ON market_alerts(asset_id) WHERE outcome IS NULL;
 

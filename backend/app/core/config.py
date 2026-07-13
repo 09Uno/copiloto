@@ -12,7 +12,9 @@ from functools import lru_cache
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+
+from app.core import universe
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 PROJECT_DIR = BACKEND_DIR.parent
@@ -74,6 +76,12 @@ class Risco(BaseModel):
     horizonte_max: dict[str, int]
 
 
+class CrossSectional(BaseModel):
+    janela_reversao: int
+    n_extremos: int
+    min_universo: int
+
+
 class Custos(BaseModel):
     cripto_taker_pct: float
     acoes_br_pct: float
@@ -103,6 +111,7 @@ class Params(BaseModel, frozen=True):
     volume: Volume
     risco: Risco
     custos: Custos
+    cross_sectional: CrossSectional
 
     @property
     def min_velas(self) -> int:
@@ -120,10 +129,35 @@ class Params(BaseModel, frozen=True):
         )
 
 
+def _merge(base: dict, over: dict) -> dict:
+    """Merge profundo: o perfil sobrescreve só o que declara."""
+    out = dict(base)
+    for k, v in over.items():
+        out[k] = _merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
+
+
 @lru_cache
-def load_params(path: Path | None = None) -> Params:
+def load_params(
+    market: Market | None = None,
+    timeframe: Timeframe | None = None,
+    path: Path | None = None,
+) -> Params:
+    """Parâmetros do PERFIL (mercado × timeframe), com fallback para o `default`.
+
+    Não existe um parâmetro único que sirva para uma vela de 15 minutos do BTC e para um
+    pregão da VALE3 — são processos estatísticos diferentes. Cada perfil é calibrado
+    independentemente na Fase 2; o `default` é só o ponto de partida.
+    """
     raw = yaml.safe_load((path or PARAMS_PATH).read_text(encoding="utf-8"))
-    return Params.model_validate(raw)
+    cfg = raw["default"] | {"engine_version": raw["engine_version"]}
+
+    if market and timeframe:
+        chave = f"{market.value}:{timeframe.value}"
+        if over := raw.get("perfis", {}).get(chave):
+            cfg = _merge(cfg, over)
+
+    return Params.model_validate(cfg)
 
 
 # ---------------------------------------------------------------- universo de ativos
@@ -148,31 +182,35 @@ class Asset(BaseModel, frozen=True):
         """
         return "BRL" if self.market is Market.B3 else "USD"
 
+    def params(self) -> Params:
+        """Atalho: os parâmetros do perfil deste ativo, por timeframe."""
+        return load_params(self.market, self.timeframes[0])
 
-# Day trade (15m) só existe onde há dado em tempo real: cripto.
-# Ação com delay de 15min não faz reversão intradiária — ver SPEC.md §1.
-WATCHLIST: tuple[Asset, ...] = (
-    # --- Cripto (Binance): único mercado com 15m viável
-    Asset(ticker="BTCUSDT", market=Market.CRYPTO, name="Bitcoin",
-          timeframes=(Timeframe.M15, Timeframe.D1)),
-    Asset(ticker="ETHUSDT", market=Market.CRYPTO, name="Ethereum",
-          timeframes=(Timeframe.M15, Timeframe.D1)),
-    Asset(ticker="SOLUSDT", market=Market.CRYPTO, name="Solana",
-          timeframes=(Timeframe.M15, Timeframe.D1)),
-    # --- B3 (EOD apenas)
-    Asset(ticker="PETR4.SA", market=Market.B3, name="Petrobras PN",
-          timeframes=(Timeframe.D1,)),
-    Asset(ticker="VALE3.SA", market=Market.B3, name="Vale ON",
-          timeframes=(Timeframe.D1,)),
-    Asset(ticker="ITUB4.SA", market=Market.B3, name="Itaú Unibanco PN",
-          timeframes=(Timeframe.D1,)),
-    Asset(ticker="BBAS3.SA", market=Market.B3, name="Banco do Brasil ON",
-          timeframes=(Timeframe.D1,)),
-    # --- EUA (EOD apenas)
-    Asset(ticker="AAPL", market=Market.US, name="Apple", timeframes=(Timeframe.D1,)),
-    Asset(ticker="MSFT", market=Market.US, name="Microsoft", timeframes=(Timeframe.D1,)),
-    Asset(ticker="NVDA", market=Market.US, name="NVIDIA", timeframes=(Timeframe.D1,)),
-)
+
+def _build_watchlist() -> tuple[Asset, ...]:
+    """Universo gerado a partir de `universe.py`.
+
+    Day trade (15m) só existe onde há dado em tempo real: cripto. Ação com delay de 15 minutos
+    não sustenta reversão intradiária (SPEC §1) — por isso ela só tem `1d`.
+    """
+    ativos: list[Asset] = []
+
+    for t in universe.CRYPTO_TICKERS:
+        ativos.append(
+            Asset(ticker=t, market=Market.CRYPTO, name=t.removesuffix("USDT"),
+                  timeframes=(Timeframe.M15, Timeframe.D1))
+        )
+    for t in universe.B3_TICKERS:
+        ativos.append(
+            Asset(ticker=f"{t}.SA", market=Market.B3, name=t, timeframes=(Timeframe.D1,))
+        )
+    for t in universe.US_TICKERS:
+        ativos.append(Asset(ticker=t, market=Market.US, name=t, timeframes=(Timeframe.D1,)))
+
+    return tuple(ativos)
+
+
+WATCHLIST: tuple[Asset, ...] = _build_watchlist()
 
 
 def watchlist(market: Market | None = None) -> list[Asset]:

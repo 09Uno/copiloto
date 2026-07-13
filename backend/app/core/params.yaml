@@ -1,45 +1,68 @@
 # Hiperparâmetros do motor — SPEC.md §7
 #
-# Estes valores são um PONTO DE PARTIDA, não uma configuração final.
-# A calibração é OUTPUT da Fase 2 (backtest), nunca input.
-# Toda mudança aqui invalida o backtest anterior: suba a engine_version junto.
+# PONTO DE PARTIDA, não configuração final. A calibração é OUTPUT da Fase 2 (backtest),
+# nunca input. Toda mudança aqui invalida o backtest anterior: suba a engine_version junto.
+#
+# Os perfis existem porque não há um parâmetro único que sirva para uma vela de 15 minutos
+# do BTC e para um pregão da VALE3 — são processos estatísticos diferentes. Cada perfil é
+# calibrado INDEPENDENTEMENTE na Fase 2.
+#
+# Hoje os perfis quase não divergem do default de propósito: ajustá-los "no olho" para fazer
+# aparecer mais sinal seria fitting disfarçado. Quem decide os valores é o grid search.
 
-engine_version: "0.1.0-rule"
+engine_version: "0.2.0-rule"
 
-regressao:
-  janela: 100 # velas
-  base: log_preco
+default:
+  regressao:
+    janela: 100
+    base: log_preco
 
-bandas:
-  janela_media: 20
-  n_sigma_entrada: 2.0
+  bandas:
+    janela_media: 20
+    n_sigma_entrada: 2.0
 
-regime:
-  r2_max_lateral: 0.30 # acima disso = TENDENCIA → não opera reversão
-  nervoso_atr_mult: 2.5 # ATR% acima de N× sua mediana móvel = choque de volatilidade
-  nervoso_atr_janela: 100
+  regime:
+    r2_max_lateral: 0.30 # acima disso = TENDENCIA → não opera reversão
+    nervoso_atr_mult: 2.5 # ATR% acima de N× sua mediana móvel = choque de volatilidade
+    nervoso_atr_janela: 100
 
-score: # pesos do score 0-100 (somam 100). Explicável de propósito — nada de ML aqui.
-  peso_desvio: 40 # quão além de n_sigma o preço foi
-  peso_volume: 25 # quão além de z_minimo o volume confirmou
-  peso_rr: 20 # quão acima de rr_minimo ficou o risco:retorno
-  peso_regime: 15 # quão claramente lateral está o mercado (R² baixo)
+  score: # pesos do score 0-100 (somam 100). Explicável de propósito — nada de ML aqui.
+    peso_desvio: 40
+    peso_volume: 25
+    peso_rr: 20
+    peso_regime: 15
 
-volume:
-  janela_zscore: 50
-  z_minimo: 2.0
-  base: log_volume
+  volume:
+    janela_zscore: 50
+    z_minimo: 2.0
+    base: log_volume
 
-risco:
-  atr_janela: 14
-  stop_atr_mult: 1.5
-  rr_minimo: 2.0 # descarta o sinal se TP_dist < 2 × SL_dist
-  horizonte_max: # barreira temporal do triple-barrier, em velas
-    15m: 24 # ~6h
-    1d: 10 # 10 pregões
+  risco:
+    atr_janela: 14
+    stop_atr_mult: 1.5
+    rr_minimo: 2.0 # descarta o sinal se TP_dist < 2 × SL_dist
+    horizonte_max: # barreira temporal do triple-barrier, em velas
+      15m: 24 # ~6h
+      1d: 10 # 10 pregões
 
-custos: # percentuais, por perna da operação
-  cripto_taker_pct: 0.10
-  acoes_br_pct: 0.05
-  acoes_us_pct: 0.00
-  slippage_pct: 0.05
+  custos: # por perna da operação
+    cripto_taker_pct: 0.10
+    acoes_br_pct: 0.05
+    acoes_us_pct: 0.00
+    slippage_pct: 0.05 # ← chute. A Fase 4 mede o slippage REAL e substitui (SPEC §8.4).
+
+  # Estratégia cross-sectional (SPEC §11): rankeia o universo em vez de esperar cada papel
+  # cruzar um limiar sozinho. É o que de fato funciona em ações.
+  cross_sectional:
+    janela_reversao: 5 # retorno acumulado dos últimos N pregões
+    n_extremos: 10 # opera os N mais castigados (compra) e os N mais esticados (venda)
+    min_universo: 30 # abaixo disso o ranking não tem significado
+
+perfis:
+  CRYPTO:15m: {}
+
+  # Regressão de 100 pregões ≈ 5 meses. Numa ação, é uma janela longa — mas quem decide
+  # é o backtest, não o meu palpite.
+  B3:1d: {}
+  US:1d: {}
+  CRYPTO:1d: {}
