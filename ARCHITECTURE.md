@@ -41,50 +41,138 @@ o endpoint precisa **enfileirar e retornar `202`**, nunca processar em linha.
 ## 2. Processos
 
 ```
-┌─────────────┐   HTTP    ┌──────────────┐
-│  Frontend   │──────────>│   FastAPI    │  (só lê; não calcula)
-└─────────────┘           └──────┬───────┘
-                                 │
-                          ┌──────▼───────┐
-                          │  PostgreSQL  │
-                          └──────▲───────┘
-                                 │
-┌────────────────────────────────┴────────────────────────────────┐
-│                       Worker (APScheduler)                      │
+┌─────────────┐  HTTP   ┌──────────────┐         ┌──────────┐
+│  Frontend   │────────>│   FastAPI    │         │ Telegram │  ← é aqui que o alerta
+│ (investiga) │<────────│ (só lê)      │         │  (avisa) │    te encontra
+└─────────────┘   SSE   └──────┬───────┘         └────▲─────┘
+                               │                      │
+                        ┌──────▼───────┐              │
+                        │   Supabase   │              │
+                        └──────▲───────┘              │
+                               │                      │
+┌──────────────────────────────┴──────────────────────┴───────────┐
+│                            Worker                               │
 │                                                                 │
-│  ingest_crypto    WebSocket Binance, contínuo                   │
-│  ingest_eod       agendado (fechamento B3 / NYSE)               │
-│  compute_signals  a cada vela fechada → features → market_alerts│
-│  close_alerts     alertas abertos → triple barrier → outcome    │
+│  stream_crypto   WebSocket Binance, contínuo   → vela fechada   │
+│  ingest_eod      APScheduler, no fechamento    → vela diária    │
+│  compute_signals vela fechada → engine/ → market_alerts         │
+│  close_alerts    alertas abertos → triple barrier → outcome     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-A API **não calcula nada**. Todo cálculo vive no worker; a API serve o que já está persistido.
+A API **não calcula nada** — serve o que o worker já persistiu. O dashboard é ferramenta de
+*investigação* (o porquê do alerta, o histórico, a curva de equity), não de vigilância:
+ninguém fica olhando para uma tela às 3h da manhã quando o BTC rompe a banda. Quem avisa é o Telegram.
 
 ---
 
-## 3. Layout do repositório
+## 3. Monitoramento em tempo real
+
+### 3.1 O sinal só existe na vela FECHADA
+
+Regra dura, e a mais importante desta seção. A vela em formação tem OHLC que **ainda vai mudar** —
+um sinal calculado sobre ela aparece e some conforme o preço oscila (*repaint*). Fica convincente ao
+vivo e é **impossível de reproduzir no backtest**, porque o backtest só vê velas fechadas. Toda
+divergência entre o desempenho real e o simulado nasce de furos assim.
+
+Portanto a cadência do motor de sinal é: **a cada 15 minutos** (cripto) e **uma vez por dia** (ações).
+Não é tick a tick, e não precisa ser.
+
+### 3.2 Cripto — WebSocket Binance (o único tempo real de verdade)
+
+```
+wss://stream.binance.com:9443/stream?streams=btcusdt@kline_15m/ethusdt@kline_15m/solusdt@kline_15m
+```
+
+O stream empurra a vela parcial a cada ~1s. O campo que interessa é `k.x`:
+
+```jsonc
+{ "data": { "k": {
+    "t": 1752300000000,  // open time
+    "o": "...", "h": "...", "l": "...", "c": "...", "v": "...",
+    "x": false           // ← false = ainda em formação. IGNORAR.
+                         //   true  = vela FECHADA. É o único gatilho válido.
+}}}
+```
+
+Ao receber `x == true`: grava a vela (Parquet + Postgres) → recalcula as features → avalia a regra →
+persiste o alerta, se houver → dispara o Telegram. Latência: segundos após o fechamento.
+
+**Reconexão não é opcional.** A Binance derruba a conexão a cada 24h, e queda de rede acontece.
+Ao reconectar, o worker **rebusca via REST** o intervalo perdido (o `backfill` incremental já faz
+exatamente isso) antes de voltar a confiar no stream. Sem isso, um gap silencioso entra na série e
+contamina as janelas dos indicadores.
+
+### 3.3 Ações — agendado, porque tempo real gratuito não existe
+
+Não há fonte gratuita de cotação em tempo real para B3 ou EUA; o `yfinance` entrega com **15 minutos
+de atraso**. É exatamente por isso que o SPEC §1 não tem day trade em ação — não é escolha de escopo,
+é limitação física do dado. Para swing, isso é irrelevante: um sinal diário não fica melhor por
+chegar 15 minutos antes.
+
+| Job | Quando | Fuso |
+|---|---|---|
+| `ingest_eod` B3 | 18:30 | America/Sao_Paulo |
+| `ingest_eod` EUA | 17:00 | America/New_York (o offset UTC muda 2x/ano — **agendar no fuso da bolsa, nunca em UTC fixo**) |
+
+### 3.4 Alertas abertos — o único lugar onde streaming ganha do polling
+
+Dentro de uma vela de 15 minutos, o preço pode tocar o stop e voltar. Quem só olha o `close` não vê,
+e registra como vencedora uma operação que **teria sido estopada**. É o mesmo problema de desempate do
+triple-barrier (SPEC §5), agora ao vivo.
+
+Por isso `close_alerts` consome o preço contínuo do stream — não o `close` da vela — para decidir se
+uma barreira foi tocada. Em ações, sem dado intrabar, o desempate usa o timeframe menor disponível e,
+na dúvida, **assume o pior caso (stop primeiro)**. Errar para o lado pessimista mantém o histórico de
+treino honesto; errar para o otimista fabrica uma borda que não existe.
+
+### 3.5 Onde isso roda — decisão pendente
+
+Cripto é 24/7, então o worker de streaming precisa estar **ligado 24/7**:
+
+| Opção | Custo | O que se perde |
+|---|---|---|
+| PC local | R$ 0 | Todo reinício/queda de internet = gap. Inviável a médio prazo. |
+| **VPS (Hetzner/DO)** | ~US$ 5/mês | Nada. É o desenho pretendido. |
+| Cron a cada 15min via REST | R$ 0 | O streaming; o TP/SL perde a precisão intrabar (§3.4). Aceitável como meio-termo. |
+
+**Decidir só depois da Fase 2.** Seria estranho pagar VPS para monitorar em tempo real uma estratégia
+que ainda não sabemos se tem borda. O backtest roda offline, no PC, e é ele que autoriza este gasto.
+
+---
+
+## 4. Layout do repositório
+
+`[x]` = existe;  `[ ]` = previsto.
 
 ```
 day-and-swing/
-├── docker-compose.yml
+├── data/                        # [x] Parquet, fora do git (reprodutível via backfill)
+├── infra/schema.sql             # [x] Postgres puro, idempotente
 ├── backend/
-│   ├── alembic/                 # migrações
+│   ├── .env                     # [x] DATABASE_URL — NUNCA versionado
 │   ├── app/
-│   │   ├── api/                 # rotas FastAPI
-│   │   ├── core/                # config (hiperparâmetros do SPEC §7), db
-│   │   ├── models/              # SQLAlchemy
-│   │   ├── engine/              # ← módulo PURO, sem I/O (SPEC §2-§4)
-│   │   │   ├── indicators.py    #   regressão, bandas, z-score, ATR
-│   │   │   ├── regime.py        #   LATERAL | TENDENCIA | NERVOSO
-│   │   │   ├── signals.py       #   regra de sinal + TP/SL + filtro R:R
-│   │   │   └── barriers.py      #   triple barrier
-│   │   ├── ingest/              # binance.py, yfinance_eod.py, brapi.py
-│   │   ├── workers/             # jobs agendados
-│   │   └── nlp/                 # Fase 5
-│   ├── backtest/                # ← Fase 2. Roda offline, importa engine/
-│   └── tests/
-└── frontend/
+│   │   ├── cli.py               # [x] dands backfill | doctor | show | db
+│   │   ├── core/
+│   │   │   ├── config.py        # [x] Params, watchlist, Market, Timeframe
+│   │   │   ├── params.yaml      # [x] hiperparâmetros (SPEC §7)
+│   │   │   └── db.py            # [x] Supabase: init_schema, load_series
+│   │   ├── ingest/
+│   │   │   ├── store.py         # [x] Parquet + invariantes (UTC, sem dup, ordenado)
+│   │   │   ├── binance.py       # [x] klines REST · [ ] WebSocket (§3.2)
+│   │   │   ├── yahoo.py         # [x] EOD
+│   │   │   └── gaps.py          # [x] detecção de buracos
+│   │   ├── engine/              # [ ] Fase 1 — módulo PURO, sem I/O (SPEC §2-§4)
+│   │   │   ├── indicators.py    #     regressão log-preço, bandas, z-score, ATR
+│   │   │   ├── regime.py        #     LATERAL | TENDENCIA | NERVOSO
+│   │   │   ├── signals.py       #     regra + TP/SL + filtro R:R
+│   │   │   └── barriers.py      #     triple barrier
+│   │   ├── api/                 # [ ] Fase 3
+│   │   ├── workers/             # [ ] Fase 3 — stream, eod, signals, close_alerts (§2)
+│   │   └── nlp/                 # [ ] Fase 5
+│   ├── backtest/                # [ ] Fase 2 — roda offline, importa engine/
+│   └── tests/                   # [x] invariantes do store
+└── frontend/                    # [ ] Fase 4
 ```
 
 **`engine/` é puro de propósito:** recebe um DataFrame, devolve features. Sem banco, sem rede.
@@ -93,7 +181,7 @@ código** — se forem implementações diferentes, os resultados divergem e o b
 
 ---
 
-## 4. Schema (DDL)
+## 5. Schema (DDL)
 
 Decisões que diferem do rascunho inicial, e o porquê:
 
@@ -197,7 +285,7 @@ CREATE TABLE alert_evidence (
 
 ---
 
-## 5. Endpoints (Fase 3)
+## 6. Endpoints (Fase 3)
 
 Auth: token estático único no header (uso próprio — OAuth seria cerimônia sem função).
 
@@ -209,6 +297,13 @@ Auth: token estático único no header (uso próprio — OAuth seria cerimônia 
 | `GET` | `/api/v1/alerts/active` | Alertas com `outcome IS NULL` + score + TP/SL |
 | `GET` | `/api/v1/alerts/{id}/justification` | Features + posts via `alert_evidence` (a tela do "porquê") |
 | `GET` | `/api/v1/performance` | Curva de equity real do motor vs. o backtest |
+| `GET` | `/api/v1/stream` | **SSE** — empurra alerta novo e preço para o dashboard aberto |
 
 Se as duas curvas de `/performance` divergirem muito, **há lookahead no backtest** — é o canário
 mais barato que existe para esse bug.
+
+**Por que SSE e não WebSocket:** o fluxo é unidirecional (servidor → tela), o SSE reconecta sozinho
+e é uma linha de `EventSource` no React. WebSocket aqui só traria a complexidade do handshake sem
+usar a via de volta.
+
+O `/stream` é conveniência do dashboard, **não** o canal de alerta — quem avisa é o Telegram (§2).

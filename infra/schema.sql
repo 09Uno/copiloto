@@ -1,4 +1,4 @@
--- Schema — Postgres puro (roda no Supabase; ver ARCHITECTURE.md §4).
+-- Schema — Postgres puro (roda no Supabase; ver ARCHITECTURE.md §5).
 -- Idempotente: pode ser reaplicado (`dands db init`).
 --
 -- Decisões que divergem do rascunho original:

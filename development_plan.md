@@ -91,125 +91,28 @@ custos:
 
 ---
 
-## 4. Schema revisado (DDL)
+## 4. Schema
 
-Mudanças em relação ao `architecture_and_tech_stack.md`:
-
-- **`TIMESTAMPTZ` em tudo, gravado em UTC.** B3 + EUA + cripto = três fusos e horário de verão americano
-  mudando o offset duas vezes por ano. Este é o bug que só aparece em novembro e corrompe meses de série.
-- **Sem tabela `users` / `watchlists` / billing** — uso próprio, single-user. A watchlist é um simples
-  booleano/enum em `assets`.
-- **`UNIQUE (ticker, market_type)`** em vez de `ticker` global (o mesmo ticker pode existir em mercados diferentes).
-  `VARCHAR(20)` para caber opções da B3.
-- **Chave natural em `asset_prices`** — `(asset_id, timeframe, timestamp)` já é a PK; o `BIGSERIAL` era desperdício.
-- **`model_version` em todo score gerado** — sem isso, retreinar o modelo de sentimento invalida
-  silenciosamente todo o histórico e o dataset de treino vira uma mistura inútil de gerações.
-- **`alert_evidence`** — liga o alerta aos posts que o motivaram. Sem essa tabela, a promessa central
-  do produto (explicabilidade) é literalmente não implementável.
-- **Particionamento por tempo** em `asset_prices` desde o início (ou TimescaleDB). Migrar depois dói.
-
-```sql
-CREATE TABLE assets (
-    id            SERIAL PRIMARY KEY,
-    ticker        VARCHAR(20) NOT NULL,
-    market_type   VARCHAR(20) NOT NULL,          -- 'B3' | 'US' | 'CRYPTO'
-    name          VARCHAR(120) NOT NULL,
-    is_watchlist  BOOLEAN NOT NULL DEFAULT FALSE,
-    timeframes    TEXT[] NOT NULL DEFAULT '{1d}',-- timeframes habilitados p/ este ativo
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_asset UNIQUE (ticker, market_type)
-);
-
-CREATE TABLE asset_prices (
-    asset_id    INT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
-    timeframe   VARCHAR(5) NOT NULL,             -- '15m' | '1d'
-    timestamp   TIMESTAMPTZ NOT NULL,            -- SEMPRE UTC
-    open_price  NUMERIC(18, 8) NOT NULL,
-    high_price  NUMERIC(18, 8) NOT NULL,
-    low_price   NUMERIC(18, 8) NOT NULL,
-    close_price NUMERIC(18, 8) NOT NULL,
-    volume      NUMERIC(24, 4) NOT NULL,
-    PRIMARY KEY (asset_id, timeframe, timestamp)
-) PARTITION BY RANGE (timestamp);
--- criar partições anuais; ou trocar por TimescaleDB hypertable
-
-CREATE TABLE forum_scraped_data (
-    id               BIGSERIAL PRIMARY KEY,
-    asset_id         INT REFERENCES assets(id) ON DELETE CASCADE,
-    source           VARCHAR(50) NOT NULL,
-    external_id      VARCHAR(120),               -- id do post na origem (dedupe)
-    post_timestamp   TIMESTAMPTZ NOT NULL,
-    content_text     TEXT NOT NULL,
-    language         VARCHAR(5) NOT NULL,        -- 'pt' | 'en' — decide qual modelo NLP usar
-    sentiment_score  NUMERIC(4, 3),              -- NULL até ser pontuado
-    sentiment_model  VARCHAR(40),                -- ex: 'finbert-v1', 'bertimbau-fin-v2'
-    engagement_count INT NOT NULL DEFAULT 0,
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_post UNIQUE (source, external_id)
-);
-CREATE INDEX idx_forum_asset_time ON forum_scraped_data(asset_id, post_timestamp DESC);
-
-CREATE TABLE market_alerts (
-    id                  BIGSERIAL PRIMARY KEY,
-    asset_id            INT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
-    timeframe           VARCHAR(5) NOT NULL,
-    timestamp           TIMESTAMPTZ NOT NULL,
-    engine_version      VARCHAR(20) NOT NULL,    -- versão da regra/modelo que gerou o sinal
-    is_backtest         BOOLEAN NOT NULL DEFAULT FALSE,
-
-    -- Features (estado do mercado no momento do sinal)
-    close_price_at_alert NUMERIC(18, 8) NOT NULL,
-    regression_slope     NUMERIC(12, 8) NOT NULL,  -- sobre LOG-preço, normalizado
-    regression_r2        NUMERIC(5, 4) NOT NULL,   -- detecta regime lateral vs. tendência
-    deviation_from_mean  NUMERIC(6, 3) NOT NULL,   -- em desvios padrão
-    volume_z_score       NUMERIC(6, 3) NOT NULL,   -- sobre LOG-volume
-    atr                  NUMERIC(18, 8) NOT NULL,
-    aggregated_sentiment NUMERIC(4, 3),            -- NULL quando não há dado textual
-    market_regime        VARCHAR(15) NOT NULL,     -- 'LATERAL' | 'TENDENCIA' | 'NERVOSO'
-
-    -- Saída
-    calculated_score  INT NOT NULL,
-    alert_type        VARCHAR(10) NOT NULL,
-    trigger_price     NUMERIC(18, 8) NOT NULL,
-    take_profit_price NUMERIC(18, 8) NOT NULL,
-    stop_loss_price   NUMERIC(18, 8) NOT NULL,
-
-    -- Triple-barrier (desfecho)
-    outcome           VARCHAR(15),   -- 'TP' | 'SL' | 'TIMEOUT' | NULL (ainda aberto)
-    outcome_return    NUMERIC(8, 4), -- retorno % LÍQUIDO de custos
-    max_return_reached NUMERIC(8, 4),
-    closed_at         TIMESTAMPTZ,
-
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX idx_alerts_training ON market_alerts(outcome) WHERE outcome IS NOT NULL;
-CREATE INDEX idx_alerts_open ON market_alerts(asset_id) WHERE outcome IS NULL;
-
--- Liga o alerta às evidências textuais que o justificaram (endpoint /justification)
-CREATE TABLE alert_evidence (
-    alert_id BIGINT NOT NULL REFERENCES market_alerts(id) ON DELETE CASCADE,
-    post_id  BIGINT NOT NULL REFERENCES forum_scraped_data(id) ON DELETE CASCADE,
-    weight   NUMERIC(5, 4) NOT NULL,  -- contribuição do post no sentimento agregado
-    PRIMARY KEY (alert_id, post_id)
-);
-```
+O DDL vive em [infra/schema.sql](infra/schema.sql) (idempotente, aplicado por `dands db init`).
+As decisões e o porquê de cada uma estão em [ARCHITECTURE.md](ARCHITECTURE.md) §5 — este plano
+não duplica o schema para não haver duas versões divergindo.
 
 ---
 
 ## 5. Fases de desenvolvimento
 
-### Fase 0 — Fundação e Ingestão Histórica
+### ✅ Fase 0 — Fundação e Ingestão Histórica  *(concluída)*
 Sem isso, não há backtest.
 
-- Repositório, `docker-compose` (Postgres + pgAdmin), migrações (Alembic).
-- Schema acima aplicado.
-- **Ingestor Binance**: histórico completo de klines (15m e 1d) dos pares da watchlist. É o dataset mais
-  limpo e mais longo que existe de graça — será a base de validação da estratégia.
-- **Ingestor EOD** (yfinance / brapi): histórico diário de ações B3 e EUA.
-- Tratamento de falha como caso normal (retry, gap detection, backfill idempotente).
+- [x] Repositório, CLI (`dands`), Parquet como camada de aterrissagem.
+- [x] Supabase (Postgres gerenciado, sem Docker) — `dands db init` / `dands db load`.
+- [x] **Ingestor Binance**: klines 15m e 1d. É o dataset mais limpo e mais longo que existe
+      de graça — e a base de validação da estratégia.
+- [x] **Ingestor EOD** (yfinance): diário de B3 e EUA.
+- [x] Falha tratada como caso normal (retry, detecção de gaps, backfill idempotente).
 
-**Done quando:** houver ≥ 2 anos de histórico de 15m para os pares cripto e ≥ 5 anos de diário
-para as ações, com detecção de gaps passando limpa.
+**Resultado:** 3 anos · 323.880 velas · cobertura 100% e **zero gaps** em cripto (105.119 velas de
+15m por par). Os dias úteis ausentes nas ações foram conferidos um a um: todos feriados de bolsa.
 
 ---
 
@@ -245,20 +148,23 @@ regra é repensada — não se constrói o SaaS por cima de uma borda que não e
 
 ---
 
-### Fase 3 — Motor em Produção + API
-Só depois que a Fase 2 der sinal verde.
+### Fase 3 — Motor em Produção + Monitoramento em Tempo Real
+Só depois que a Fase 2 der sinal verde. **Especificado em detalhe em [ARCHITECTURE.md](ARCHITECTURE.md) §3.**
 
-- FastAPI + SQLAlchemy async. Auth = um único token estático (uso próprio; não precisa de OAuth).
-- Scheduler: **APScheduler dentro do próprio processo worker** para começar. O n8n do documento
-  original não elimina a necessidade de execução assíncrona — ele apenas chama um endpoint que,
-  do jeito descrito, processaria o lote inteiro na request e estouraria timeout. Se o n8n entrar
-  depois, o endpoint precisa **enfileirar e retornar `202`**.
-- Worker de ingestão contínua (WS Binance para cripto; EOD agendado para ações).
-- Worker de avaliação de desfecho: fecha os alertas abertos (`outcome IS NULL`) aplicando as barreiras.
-- Endpoints: `/assets`, `/dashboard/watchlist`, `/alerts/active`, `/alerts/{id}/justification`.
+- Worker `stream_crypto`: WebSocket da Binance. Gatilho = `k.x == true` (**vela fechada**) — nunca a
+  vela em formação, que faz o sinal *repintar* e destrói a correspondência com o backtest.
+  Reconexão obrigatória com rebusca REST do intervalo perdido.
+- Worker `ingest_eod`: APScheduler no **fuso da bolsa** (18:30 BRT / 17:00 ET), nunca em UTC fixo —
+  o offset americano muda 2x por ano.
+- Worker `close_alerts`: usa o preço **contínuo** (não o `close`) para saber se TP/SL foi tocado
+  dentro da vela. Em ações, sem intrabar, assume o pior caso (stop primeiro).
+- Alerta chega por **Telegram**. O dashboard é ferramenta de investigação, não de vigilância.
+- FastAPI só de leitura + `/stream` (SSE) para o dashboard aberto. Auth = token estático único.
+- **Decidir onde roda** (PC / VPS ~US$5 / cron REST) — a Fase 2 é quem autoriza esse gasto.
 
-**Done quando:** o sistema gerar e fechar alertas sozinho por uma semana, e as métricas
-observadas em produção baterem com as do backtest (se divergirem muito, há lookahead no backtest).
+**Done quando:** o sistema gerar e fechar alertas sozinho por uma semana, e as métricas observadas
+em produção baterem com as do backtest. Se divergirem muito, **há lookahead no backtest** — é o
+canário mais barato que existe para esse bug.
 
 ---
 
@@ -325,10 +231,3 @@ Fase 0 (fundação + histórico)
 funciona. Depois dele, cada semana investida é uma semana apostada numa premissa não testada.
 
 ---
-
-## 7. Correção pendente nos documentos existentes
-
-As fórmulas em `idea_and_planning.md` estão **literalmente corrompidas**: o script Python que gerou
-o arquivo não usou string *raw*, então o LaTeX perdeu as barras invertidas — `\alpha` virou `lpha`,
-`\beta` virou `eta`, `\frac` virou `rac`, `\text` virou TAB + `ext`. Afeta as linhas 49, 59, 68, 70,
-84 e 97. Corrigir junto com a incorporação das mudanças de matemática do §2 deste plano.
