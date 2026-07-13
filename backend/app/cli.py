@@ -142,6 +142,67 @@ def show(ticker: str, timeframe: str = "1d", n: int = 10) -> None:
     console.print(df.tail(n).to_string(index=False))
 
 
+@app.command()
+def preview(
+    ticker: str = typer.Argument(..., help="Ex: BTCUSDT"),
+    timeframe: str = typer.Argument("1d"),
+) -> None:
+    """Roda o motor sobre o histórico e mostra o FUNIL de filtros.
+
+    Não é o backtest (Fase 2): não há walk-forward nem out-of-sample. Serve para ver onde
+    os sinais morrem — que é a informação que decide o que calibrar.
+    """
+    from app.core.config import load_params
+    from app.engine import indicators, regime, signals
+    from app.engine.regime import MarketRegime
+
+    asset = next((a for a in watchlist() if a.ticker == ticker), None)
+    if asset is None:
+        raise typer.BadParameter(f"{ticker} não está na watchlist")
+
+    p = load_params()
+    tf = Timeframe(timeframe)
+    df = store.read(asset, tf)
+    if df.empty:
+        raise typer.BadParameter("série vazia — rode `dands backfill`")
+
+    f = indicators.compute(df, p)
+    f["market_regime"] = regime.classify(f, p)
+    pronto = f.dropna(subset=["market_regime", "deviation_from_mean", "volume_z_score", "atr"])
+
+    lateral = pronto["market_regime"] == MarketRegime.LATERAL.value
+    banda = pronto["deviation_from_mean"].abs() >= p.bandas.n_sigma_entrada
+    vol = pronto["volume_z_score"] >= p.volume.z_minimo
+    sinais = signals.generate(pronto, p, asset.market)
+
+    console.print(f"\n[bold]{asset.ticker}[/bold] {tf.value} · {len(pronto)} velas avaliáveis")
+
+    t = Table("Filtro", "Velas", "% do total")
+    for nome, mask in [
+        ("tocou a banda (±2σ)", banda),
+        ("  ...e volume confirmou", banda & vol),
+        ("  ...e regime LATERAL", banda & vol & lateral),
+    ]:
+        n = int(mask.sum())
+        t.add_row(nome, str(n), f"{100 * n / len(pronto):.2f}%")
+    t.add_row("  ...e passou no R:R ≥ 2", f"[bold]{len(sinais)}[/bold]",
+              f"[bold]{100 * len(sinais) / len(pronto):.3f}%[/bold]")
+    console.print(t)
+
+    r = Table("Regime", "Velas", "%")
+    for nome, n in pronto["market_regime"].value_counts().items():
+        r.add_row(str(nome), str(n), f"{100 * n / len(pronto):.1f}%")
+    console.print(r)
+
+    if len(sinais):
+        console.print(
+            f"\n[dim]score: mediana {sinais['calculated_score'].median():.0f} · "
+            f"R:R mediano {sinais['rr'].median():.2f} · "
+            f"compras {(sinais['alert_type'] == 'BUY').sum()} / "
+            f"vendas {(sinais['alert_type'] == 'SELL').sum()}[/dim]"
+        )
+
+
 @db_app.command("init")
 def db_init() -> None:
     """Aplica infra/schema.sql. Idempotente."""

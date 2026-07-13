@@ -46,6 +46,19 @@ class Bandas(BaseModel):
 
 class Regime(BaseModel):
     r2_max_lateral: float
+    nervoso_atr_mult: float
+    nervoso_atr_janela: int
+
+
+class Score(BaseModel):
+    peso_desvio: float
+    peso_volume: float
+    peso_rr: float
+    peso_regime: float
+
+    @property
+    def total(self) -> float:
+        return self.peso_desvio + self.peso_volume + self.peso_rr + self.peso_regime
 
 
 class Volume(BaseModel):
@@ -86,6 +99,7 @@ class Params(BaseModel, frozen=True):
     regressao: Regressao
     bandas: Bandas
     regime: Regime
+    score: Score
     volume: Volume
     risco: Risco
     custos: Custos
@@ -101,6 +115,7 @@ class Params(BaseModel, frozen=True):
             self.regressao.janela,
             self.bandas.janela_media,
             self.volume.janela_zscore,
+            self.regime.nervoso_atr_janela,
             self.risco.atr_janela + 1,
         )
 

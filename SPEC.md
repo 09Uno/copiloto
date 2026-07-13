@@ -91,8 +91,16 @@ Pesos fixos nesta fase. Nada de ML — o ML só entra na Fase 6, e só se bater 
 
 ```
 stop_loss     = trigger − 1.5 × ATR        (compra; espelhado na venda)
-take_profit   = μ  (a linha da regressão / média central — o alvo natural da reversão)
+take_profit   = μ  (a média móvel das bandas, §2.2 — o alvo natural da reversão)
 ```
+
+> **μ é a média móvel, não a reta de regressão.** As duas coisas existem no motor e é fácil
+> confundi-las. A entrada acontece a "2σ **abaixo de μ**" — então o alvo coerente é μ, medido
+> contra a mesma referência. A regressão serve **só** para classificar regime (§2.5).
+
+**Alvo do lado errado = sem operação.** Se numa compra o μ já estiver *abaixo* do gatilho (acontece
+quando a média está caindo rápido), não existe alvo de reversão acima da entrada. O sinal é
+descartado, não "ajustado".
 
 **Filtro de descarte:** se `|take_profit − trigger| < rr_minimo × |trigger − stop_loss|`, o sinal
 é descartado. O R:R **não é uma promessa, é um critério de eliminação**.

@@ -16,6 +16,14 @@ bandas:
 
 regime:
   r2_max_lateral: 0.30 # acima disso = TENDENCIA → não opera reversão
+  nervoso_atr_mult: 2.5 # ATR% acima de N× sua mediana móvel = choque de volatilidade
+  nervoso_atr_janela: 100
+
+score: # pesos do score 0-100 (somam 100). Explicável de propósito — nada de ML aqui.
+  peso_desvio: 40 # quão além de n_sigma o preço foi
+  peso_volume: 25 # quão além de z_minimo o volume confirmou
+  peso_rr: 20 # quão acima de rr_minimo ficou o risco:retorno
+  peso_regime: 15 # quão claramente lateral está o mercado (R² baixo)
 
 volume:
   janela_zscore: 50
