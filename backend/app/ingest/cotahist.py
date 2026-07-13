@@ -28,6 +28,7 @@ from app.core.config import DATA_DIR
 
 URL = "https://bvmf.bmfbovespa.com.br/InstDados/SerHist/COTAHIST_A{ano}.ZIP"
 CACHE = DATA_DIR / "cotahist"
+CACHE_VERSAO = "v2"  # muda quando o parse muda → invalida o cache em vez de servir dado velho
 
 # Posições (0-indexadas, semiabertas) conforme o layout oficial da B3.
 COLSPECS = [
@@ -36,6 +37,7 @@ COLSPECS = [
     (10, 12),    # CODBDI — '02' = lote padrão
     (12, 24),    # CODNEG — o ticker
     (24, 27),    # TPMERC — '010' = mercado à vista
+    (39, 49),    # ESPECI — tipo do papel: ON/PN/UNT vs. CI (fundo/ETF) vs. DR (BDR)
     (56, 69),    # PREABE — abertura
     (69, 82),    # PREMAX — máxima
     (82, 95),    # PREMIN — mínima
@@ -44,7 +46,7 @@ COLSPECS = [
     (170, 188),  # VOLTOT — volume FINANCEIRO (é o que o SPEC §2.3 quer)
 ]
 NAMES = [
-    "tipreg", "data", "codbdi", "codneg", "tpmerc",
+    "tipreg", "data", "codbdi", "codneg", "tpmerc", "especi",
     "open", "high", "low", "close", "quantidade", "volume",
 ]
 
@@ -73,6 +75,7 @@ def _parse(raw: bytes) -> pd.DataFrame:
             "ticker": df["codneg"].str.strip(),
             # 00:00 UTC do pregão. O COTAHIST é EOD: a hora não existe, só a data.
             "timestamp": pd.to_datetime(df["data"], format="%Y%m%d", utc=True),
+            "especi": df["especi"].fillna("").str.strip(),
         }
     )
     for c in ("open", "high", "low", "close"):
@@ -82,10 +85,19 @@ def _parse(raw: bytes) -> pd.DataFrame:
     return out.dropna(subset=["open", "high", "low", "close"])
 
 
+def eh_acao(especi: pd.Series) -> pd.Series:
+    """Só ação de verdade. ETF e fundo imobiliário também terminam em 11 (BOVA11, KNRI11) e
+    entrariam no universo se filtrássemos pelo ticker — mas o ESPECI os denuncia:
+    ON/PN/UNT são ações; 'CI' é cota de fundo; 'DR' é BDR.
+    """
+    e = especi.str.upper()
+    return e.str.startswith(("ON", "PN", "UNT"))
+
+
 def fetch_ano(ano: int, force: bool = False) -> pd.DataFrame:
     """Baixa e parseia um ano. O resultado fica em cache — o ZIP não muda nunca."""
     CACHE.mkdir(parents=True, exist_ok=True)
-    cache = CACHE / f"{ano}.parquet"
+    cache = CACHE / f"{ano}_{CACHE_VERSAO}.parquet"
 
     if cache.exists() and not force:
         return pd.read_parquet(cache)

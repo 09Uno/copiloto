@@ -229,6 +229,47 @@ def cotahist_b3(
 
 
 @app.command()
+def universo_b3(
+    top: int = typer.Option(120, help="Quantos papéis compõem o universo em cada mês."),
+    anos: int = typer.Option(20),
+) -> None:
+    """Reconstrói o universo POINT-IN-TIME da B3, com os papéis que morreram.
+
+    Sem isto, o backtest só vê quem sobreviveu — e as empresas que quebraram, que são
+    justamente as que dariam prejuízo, sumiram da amostra. O resultado é inflado.
+    """
+    from app.core import b3_universe
+
+    console.print(f"[bold]Universo B3[/bold] · top {top} por liquidez, revisto todo mês\n")
+    painel, comp = b3_universe.build(top_n=top, anos=anos)
+    b3_universe.save(painel, comp)
+
+    vivos = {a.ticker.removesuffix(".SA") for a in watchlist(Market.B3)}
+    membros = set(comp["ticker"])
+    mortos = sorted(membros - vivos)
+
+    console.print(
+        f"  {len(membros)} papéis já pertenceram ao universo · "
+        f"{len(painel):,} velas · {comp['data'].nunique()} rebalanceamentos"
+    )
+    console.print(
+        f"  [bold yellow]{len(mortos)}[/bold yellow] deles NÃO estão na watchlist de hoje "
+        f"[dim](deslistados, incorporados ou definhados — é a amostra que faltava)[/dim]"
+    )
+    console.print(f"  [dim]{', '.join(mortos[:40])}{' …' if len(mortos) > 40 else ''}[/dim]")
+
+    # A prova de que o universo é mesmo point-in-time: a composição MUDA ao longo do tempo.
+    primeira, ultima = comp["data"].min(), comp["data"].max()
+    a = set(b3_universe.membros_em(comp, primeira))
+    b = set(b3_universe.membros_em(comp, ultima))
+    console.print(
+        f"\n  [dim]composição em {primeira:%Y-%m}: {len(a)} papéis · "
+        f"em {ultima:%Y-%m}: {len(b)} · em comum: {len(a & b)} "
+        f"→ {len(a - b)} saíram, {len(b - a)} entraram[/dim]"
+    )
+
+
+@app.command()
 def preview(
     ticker: str = typer.Argument(..., help="Ex: BTCUSDT"),
     timeframe: str = typer.Argument("1d"),
