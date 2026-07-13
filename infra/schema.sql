@@ -100,3 +100,106 @@ CREATE TABLE IF NOT EXISTS alert_evidence (
     weight   NUMERIC(5, 4) NOT NULL,               -- contribuição no sentimento agregado
     PRIMARY KEY (alert_id, post_id)
 );
+
+-- ============================================================================
+-- CARTEIRA E EXECUÇÃO (SPEC §8)
+-- ============================================================================
+
+-- Uma banca POR MOEDA. Somar tudo num número só esconde a pergunta que importa:
+-- um "+3% na semana" pode ser puro dólar subindo, sem nenhuma operação ter dado certo.
+CREATE TABLE IF NOT EXISTS accounts (
+    id                 SERIAL PRIMARY KEY,
+    name               VARCHAR(60)   NOT NULL,
+    currency           CHAR(3)       NOT NULL UNIQUE,  -- 'BRL' | 'USD' (USDT conta como USD)
+    initial_balance    NUMERIC(18, 2) NOT NULL,
+    cash_balance       NUMERIC(18, 2) NOT NULL,
+    risk_per_trade_pct NUMERIC(5, 3) NOT NULL DEFAULT 1.0,  -- sizing (SPEC §8.2)
+    created_at         TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS currency CHAR(3) NOT NULL DEFAULT 'USD';
+-- B3 → BRL;  US e CRYPTO → USD. É o que roteia o trade para a conta certa.
+
+-- Câmbio só para a VISÃO consolidada — nunca para converter o P&L de um trade,
+-- senão o resultado de uma operação em dólar muda sozinho quando o câmbio mexe.
+CREATE TABLE IF NOT EXISTS fx_rates (
+    date DATE          NOT NULL,
+    pair VARCHAR(7)    NOT NULL,                   -- 'USDBRL' (yfinance: BRL=X)
+    rate NUMERIC(12, 6) NOT NULL,
+    PRIMARY KEY (date, pair)
+);
+
+-- O que o motor SUGERIU vive em market_alerts. Aqui fica o que EXECUTOU.
+-- A diferença entre os dois é que carrega a informação (slippage → custos do backtest).
+CREATE TABLE IF NOT EXISTS trades (
+    id         BIGSERIAL PRIMARY KEY,
+    account_id INT    NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    asset_id   INT    NOT NULL REFERENCES assets(id)   ON DELETE CASCADE,
+    alert_id   BIGINT REFERENCES market_alerts(id),    -- NULL = trade manual, sem alerta
+    side       VARCHAR(4)  NOT NULL,                   -- 'BUY' | 'SELL'
+    status     VARCHAR(10) NOT NULL DEFAULT 'OPEN',    -- 'OPEN' | 'CLOSED'
+
+    -- Preenchimento real (a verdade)
+    entry_price NUMERIC(18, 8) NOT NULL,
+    entry_qty   NUMERIC(24, 8) NOT NULL,
+    entry_at    TIMESTAMPTZ    NOT NULL,
+    entry_fee   NUMERIC(18, 8) NOT NULL DEFAULT 0,
+
+    -- Barreiras: são NÍVEIS DO MERCADO (ATR / linha de regressão). NÃO se movem porque
+    -- seu preenchimento foi pior — o mercado não mudou por você ter pagado mais caro.
+    -- O que piora é o SEU risco-retorno, e é por isso que rr_real é recalculado no fill:
+    -- se cair abaixo de risco.rr_minimo, o sistema avisa (SPEC §8.3).
+    take_profit NUMERIC(18, 8) NOT NULL,
+    stop_loss   NUMERIC(18, 8) NOT NULL,
+    rr_real     NUMERIC(6, 3)  NOT NULL,
+
+    exit_price       NUMERIC(18, 8),
+    exit_qty         NUMERIC(24, 8),
+    exit_at          TIMESTAMPTZ,
+    exit_fee         NUMERIC(18, 8) DEFAULT 0,
+    exit_reason      VARCHAR(10),                  -- 'TP'|'SL'|'MANUAL'|'TIMEOUT'
+    realized_pnl     NUMERIC(18, 2),               -- na moeda da conta
+    realized_pnl_pct NUMERIC(8, 4),
+
+    notes      TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- Um alerta só vira UMA operação: clicar "Confirmar" duas vezes não duplica a posição.
+    CONSTRAINT uq_trade_alert UNIQUE (alert_id)
+);
+CREATE INDEX IF NOT EXISTS idx_trades_open ON trades(account_id) WHERE status = 'OPEN';
+CREATE INDEX IF NOT EXISTS idx_trades_closed_at ON trades(account_id, exit_at DESC)
+    WHERE status = 'CLOSED';
+
+-- Fecho diário da banca: é daqui que saem "ganho hoje/semana/mês" e o DRAWDOWN REAL —
+-- o número que de fato importa e que quase ninguém olha.
+CREATE TABLE IF NOT EXISTS equity_snapshots (
+    account_id       INT  NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    date             DATE NOT NULL,
+    cash             NUMERIC(18, 2) NOT NULL,
+    positions_value  NUMERIC(18, 2) NOT NULL,      -- posições abertas a preço de mercado
+    equity           NUMERIC(18, 2) NOT NULL,      -- cash + positions_value
+    realized_pnl_day NUMERIC(18, 2) NOT NULL,
+    unrealized_pnl   NUMERIC(18, 2) NOT NULL,
+    PRIMARY KEY (account_id, date)
+);
+
+-- ============================================================================
+-- ANALOGIA HISTÓRICA (SPEC §9)
+-- ============================================================================
+
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- [slope_norm, r2, deviation_from_mean, volume_z_score, atr/close]
+-- As 5 features são ADIMENSIONAIS por construção. Isso é de propósito: se fosse preciso
+-- AJUSTAR um normalizador sobre o histórico inteiro, o próprio normalizador veria o futuro
+-- — vazamento sutil e clássico.
+ALTER TABLE market_alerts ADD COLUMN IF NOT EXISTS state_vector vector(5);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_state_vector
+    ON market_alerts USING hnsw (state_vector vector_l2_ops);
+
+-- ATENÇÃO ao consultar: a busca por vizinhos SÓ pode olhar alertas estritamente ANTERIORES
+--   ... WHERE timestamp < :agora AND outcome IS NOT NULL ORDER BY state_vector <-> :v LIMIT k
+-- Um kNN ingênuo sobre a tabela inteira enxerga o futuro e devolve uma taxa de acerto
+-- fantástica e falsa.

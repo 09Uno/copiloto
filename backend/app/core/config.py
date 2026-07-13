@@ -125,6 +125,14 @@ class Asset(BaseModel, frozen=True):
         """Nome seguro para caminho de arquivo (PETR4.SA → PETR4_SA)."""
         return self.ticker.replace(".", "_").replace("/", "_")
 
+    @property
+    def currency(self) -> str:
+        """Moeda da banca em que este ativo é operado (SPEC §8.1).
+
+        USDT é tratado como USD: os pares da watchlist são todos */USDT.
+        """
+        return "BRL" if self.market is Market.B3 else "USD"
+
 
 # Day trade (15m) só existe onde há dado em tempo real: cripto.
 # Ação com delay de 15min não faz reversão intradiária — ver SPEC.md §1.

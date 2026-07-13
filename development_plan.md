@@ -168,7 +168,19 @@ canário mais barato que existe para esse bug.
 
 ---
 
-### Fase 4 — Dashboard (Vite + React + Tailwind)
+### Fase 4 — Dashboard + Carteira (Vite + React + Tailwind)
+Especificado em [SPEC.md](SPEC.md) §8.
+
+- **Banca por moeda** (BRL / USD): ganho hoje / semana / mês, em % e em valor, e o
+  **drawdown real** — o número que de fato importa e que quase ninguém olha.
+- **Botão Confirmar** no alerta: você corrige o preço e a quantidade para o que *realmente*
+  executou, e isso vira um `trade`. Dois níveis (sugerido × executado), nunca um só.
+  O alvo e o stop **não se movem** por causa de um preenchimento pior — o que muda é o
+  `rr_real`, recalculado no fill, e o sistema avisa se ele caiu abaixo do mínimo.
+- **Sizing**: o alerta já diz *quanto* comprar, a partir do stop e do risco por operação.
+- **Analogia histórica** (SPEC §9): "este setup se pareceu com 50 casos passados; 32 bateram o
+  alvo" + os gráficos parecidos ao lado. `pgvector` já habilitado, kNN só com vizinhos
+  **estritamente anteriores** (senão enxerga o futuro).
 - Watchlist com o estado estatístico de cada ativo (distância da média em σ, regime, z-score de volume).
 - Painel de alertas ativos com TP/SL e o **porquê** (a tela de justificativa consumindo `alert_evidence`).
 - Gráfico com bandas, linha de regressão e marcações de entrada/saída.
@@ -195,6 +207,10 @@ de você tentar melhorá-lo com texto — caso contrário você não consegue me
   sinais que *não* emitiu, então o modelo não aprende a discriminar — apenas descreve o que a regra já escolhia.
 - Modelo: gradient boosting sobre as features de `market_alerts`, com validação temporal
   (nunca k-fold aleatório em série temporal).
+- **Meta-labeling** (SPEC §8.4): os trades que você confirmou treinam um *segundo* modelo, por
+  cima do preditor — ele aprende **o seu filtro** e mede se ele bate o modelo sozinho.
+  O preditor continua treinando em **todos** os alertas; treiná-lo só nos confirmados o faria
+  imitar a sua seleção em vez de prever o mercado.
 - Explicabilidade via SHAP, alimentando a tela de justificativa.
 - **Critério de adoção:** o modelo só substitui a regra determinística se bater o baseline dela
   fora da amostra. Caso contrário, fica desligado.

@@ -193,5 +193,44 @@ def db_load(market: Market | None = typer.Option(None)) -> None:
     asyncio.run(_run())
 
 
+@db_app.command("account")
+def db_account(
+    currency: str = typer.Argument(..., help="BRL ou USD (USDT conta como USD)."),
+    saldo: float = typer.Option(..., "--saldo", help="Saldo inicial da banca."),
+    risco: float = typer.Option(
+        1.0, "--risco", help="%% da banca arriscado por operação (sizing, SPEC §8.2)."
+    ),
+) -> None:
+    """Cria ou atualiza uma banca. Uma por moeda (SPEC §8.1)."""
+    currency = currency.upper()
+    if currency not in ("BRL", "USD"):
+        raise typer.BadParameter("moeda deve ser BRL ou USD")
+
+    async def _run() -> None:
+        from decimal import Decimal
+
+        from app.core import db
+
+        conn = await db.connect()
+        try:
+            await db.upsert_account(
+                conn, currency, Decimal(str(saldo)), Decimal(str(risco))
+            )
+            contas = await conn.fetch(
+                "SELECT currency, initial_balance, cash_balance, risk_per_trade_pct "
+                "FROM accounts ORDER BY currency"
+            )
+        finally:
+            await conn.close()
+
+        for c in contas:
+            console.print(
+                f"  [bold]{c['currency']}[/bold]  inicial {c['initial_balance']:,.2f} · "
+                f"caixa {c['cash_balance']:,.2f} · risco {c['risk_per_trade_pct']}%/trade"
+            )
+
+    asyncio.run(_run())
+
+
 if __name__ == "__main__":
     app()
