@@ -4,10 +4,14 @@
     dands backfill --market CRYPTO   # só cripto
     dands doctor                     # relatório de cobertura e gaps
     dands show BTCUSDT 15m           # espia a série
+
+    dands db init                    # aplica o schema no Supabase
+    dands db load                    # carrega o Parquet no Postgres
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import typer
@@ -18,6 +22,8 @@ from app.core.config import Asset, Market, Timeframe, watchlist
 from app.ingest import binance, gaps, store, yahoo
 
 app = typer.Typer(add_completion=False, help="Motor quantamental — uso próprio")
+db_app = typer.Typer(help="Postgres (Supabase) — camada de serviço da API.")
+app.add_typer(db_app, name="db")
 console = Console()
 
 
@@ -134,6 +140,57 @@ def show(ticker: str, timeframe: str = "1d", n: int = 10) -> None:
 
     console.print(f"[bold]{asset.ticker}[/bold] {timeframe} · {len(df)} velas")
     console.print(df.tail(n).to_string(index=False))
+
+
+@db_app.command("init")
+def db_init() -> None:
+    """Aplica infra/schema.sql. Idempotente."""
+
+    async def _run() -> None:
+        from app.core import db
+
+        await db.init_schema()
+        conn = await db.connect()
+        try:
+            tabelas = await conn.fetch(
+                "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1"
+            )
+        finally:
+            await conn.close()
+        console.print("[green]Schema aplicado.[/green] Tabelas: " +
+                      ", ".join(t["tablename"] for t in tabelas))
+
+    asyncio.run(_run())
+
+
+@db_app.command("load")
+def db_load(market: Market | None = typer.Option(None)) -> None:
+    """Carrega o Parquet no Postgres. Idempotente (upsert por vela)."""
+
+    async def _run() -> None:
+        from app.core import db
+
+        conn = await db.connect()
+        try:
+            ids = await db.sync_assets(conn)
+            console.print(f"[dim]{len(ids)} ativos sincronizados.[/dim]\n")
+
+            total = 0
+            for asset in watchlist(market):
+                for tf in asset.timeframes:
+                    n = await db.load_series(conn, asset, tf, ids[asset.ticker])
+                    total += n
+                    console.print(f"  [green]→[/green] {asset.ticker:<10} {tf.value:<4} "
+                                  f"[dim]{n} velas[/dim]")
+
+            n_db = await conn.fetchval("SELECT COUNT(*) FROM asset_prices")
+        finally:
+            await conn.close()
+
+        console.print(f"\n[bold green]{total}[/bold green] velas enviadas · "
+                      f"[bold]{n_db}[/bold] no banco.")
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

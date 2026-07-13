@@ -16,6 +16,7 @@ cd backend
 python -m venv .venv
 .venv/Scripts/activate        # Windows;  source .venv/bin/activate no Linux
 pip install -e ".[dev]"
+cp .env.example .env          # e preencha DATABASE_URL com a URI do Supabase
 ```
 
 ## Uso
@@ -25,17 +26,25 @@ dands backfill --anos 3       # baixa o histórico (idempotente; rodar de novo s
 dands backfill --market CRYPTO
 dands doctor                  # cobertura e gaps — RODAR ANTES de confiar no dado
 dands show BTCUSDT 15m
+
+dands db init                 # aplica infra/schema.sql no Supabase (idempotente)
+dands db load                 # carrega o Parquet no Postgres (upsert por vela)
+
 pytest
 ```
 
-## Onde o dado mora
+## Onde o dado mora (duas camadas, de propósito)
 
-Parquet em `data/ohlcv/{mercado}/{ticker}/{timeframe}.parquet` — um arquivo por série,
-tz-aware em UTC, sem duplicata, ordenado. Invariantes garantidas por `app/ingest/store.py`
-e cobertas por teste.
+**Aterrissagem — Parquet local.** `data/ohlcv/{mercado}/{ticker}/{timeframe}.parquet`: um arquivo
+por série, tz-aware em UTC, sem duplicata, ordenado. Invariantes garantidas por
+`app/ingest/store.py` e cobertas por teste. É a fonte da verdade do dado bruto — imutável e
+reprodutível via `dands backfill` (por isso `data/` não vai pro git).
 
-O dado bruto é **imutável e reprodutível** (`data/` não vai pro git). O Postgres da Fase 3
-carrega a partir daqui; o backtest da Fase 2 lê o Parquet direto e **não precisa de banco no ar**.
+**Serviço — Supabase (Postgres).** Alimentado a partir do Parquet por `dands db load`. É dele
+que a API e o dashboard leem (Fase 3).
+
+Não é redundância: o backtest da Fase 2 relê o histórico centenas de vezes no grid search de
+hiperparâmetros, e **não deve depender de rede nem de banco no ar** — ele lê o Parquet direto.
 
 ## Estado
 
@@ -49,10 +58,7 @@ carrega a partir daqui; o backtest da Fase 2 lê o Parquet direto e **não preci
 > e fora da amostra**, o projeto para ali e a regra é repensada — não se constrói o resto
 > por cima de uma borda que não existe.
 
-## Docker (Fase 3)
+## Banco
 
-Ainda não instalado nesta máquina. Quando estiver:
-
-```bash
-docker compose up -d          # Postgres + TimescaleDB, schema aplicado de infra/schema.sql
-```
+Supabase (Postgres gerenciado) — nada a instalar na máquina. A URI vai em `backend/.env`,
+que **nunca é versionado**. `infra/schema.sql` é Postgres puro e idempotente.

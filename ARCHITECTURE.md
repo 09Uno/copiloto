@@ -13,8 +13,21 @@ a **ordem** de construção em [development_plan.md](development_plan.md).
 | API | FastAPI + Uvicorn + SQLAlchemy async + Pydantic | Leitura do estado; auth por token único (uso próprio). |
 | Workers | Python (pandas, numpy, scikit-learn) | Ingestão, cálculo de features, avaliação de desfecho. |
 | Scheduler | **APScheduler** dentro do processo worker | Ver §2. |
-| Banco | PostgreSQL 16 (+ TimescaleDB ou partições nativas) | Séries temporais, textos, alertas. |
-| Infra | Docker Compose | Postgres + API + worker. |
+| Banco | **Supabase** (Postgres gerenciado) | Camada de **serviço**: API e dashboard leem dele. |
+| Dado bruto | **Parquet** local (`data/`) | Camada de **aterrissagem**: imutável, reprodutível. |
+
+### Sobre o armazenamento em duas camadas
+O dado bruto vive em Parquet e o Postgres é alimentado a partir dele (`dands db load`).
+Não é redundância:
+- o **backtest (Fase 2)** relê o histórico centenas de vezes no grid search de hiperparâmetros —
+  ler Parquet local é instantâneo e não depende de rede nem de banco no ar;
+- o dado bruto é **imutável**; não há motivo para ele nascer num banco transacional;
+- reingerir 3 anos de klines a cada mudança de schema seria desperdício.
+
+**Sem TimescaleDB e sem particionamento.** O Supabase não oferece a extensão, e — sendo honesto —
+particionar ~300k linhas em uma ferramenta de uso próprio é otimização prematura: o Postgres puro
+lida com dezenas de milhões de linhas sem suar. Um índice **BRIN** em `timestamp` (feito exatamente
+para dado inserido em ordem cronológica) dá o ganho a custo quase zero. Se o volume justificar, particiona-se depois.
 
 ### Sobre o n8n (removido do desenho original)
 O plano original usava n8n como scheduler chamando `POST /workers/prices/update`. **Isso não elimina a

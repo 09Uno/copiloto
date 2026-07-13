@@ -1,15 +1,20 @@
--- Schema do Postgres — ver ARCHITECTURE.md §4 para o porquê de cada decisão.
--- Aplicado automaticamente no primeiro `docker compose up`.
+-- Schema — Postgres puro (roda no Supabase; ver ARCHITECTURE.md §4).
+-- Idempotente: pode ser reaplicado (`dands db init`).
 --
--- Resumo das decisões que divergem do rascunho original:
---   TIMESTAMPTZ em tudo (B3 + EUA + cripto = 3 fusos + horário de verão americano);
---   chave natural em asset_prices (o BIGSERIAL era um índice a mais sem função);
---   engine_version / sentiment_model em todo score (senão o retreino invalida o histórico);
---   alert_evidence (sem ela, a tela de justificativa é impossível).
+-- Decisões que divergem do rascunho original:
+--   TIMESTAMPTZ em tudo — B3 + EUA + cripto são 3 fusos, e o horário de verão americano
+--     move o offset 2x por ano. TIMESTAMP sem fuso é o bug que só aparece em novembro.
+--   chave natural em asset_prices — o BIGSERIAL era um índice a mais sem função.
+--   engine_version / sentiment_model em todo score — sem isso, retreinar invalida o histórico
+--     em silêncio e o dataset de treino vira mistura inútil de gerações.
+--   alert_evidence — sem ela, a tela de justificativa é literalmente impossível.
+--
+-- Sem TimescaleDB (indisponível no Supabase) e sem particionamento: para uso próprio,
+-- particionar 300k linhas é otimização prematura. BRIN em timestamp — que é feito
+-- exatamente para dado inserido em ordem cronológica — dá o ganho a custo quase zero.
+-- Se o volume um dia justificar, particiona-se depois.
 
-CREATE EXTENSION IF NOT EXISTS timescaledb;
-
-CREATE TABLE assets (
+CREATE TABLE IF NOT EXISTS assets (
     id           SERIAL PRIMARY KEY,
     ticker       VARCHAR(20)  NOT NULL,
     market_type  VARCHAR(20)  NOT NULL,            -- 'B3' | 'US' | 'CRYPTO'
@@ -20,10 +25,10 @@ CREATE TABLE assets (
     CONSTRAINT uq_asset UNIQUE (ticker, market_type)
 );
 
-CREATE TABLE asset_prices (
-    asset_id    INT         NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
-    timeframe   VARCHAR(5)  NOT NULL,              -- '15m' | '1d'
-    timestamp   TIMESTAMPTZ NOT NULL,              -- SEMPRE UTC
+CREATE TABLE IF NOT EXISTS asset_prices (
+    asset_id    INT            NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    timeframe   VARCHAR(5)     NOT NULL,           -- '15m' | '1d'
+    timestamp   TIMESTAMPTZ    NOT NULL,           -- SEMPRE UTC
     open_price  NUMERIC(18, 8) NOT NULL,
     high_price  NUMERIC(18, 8) NOT NULL,
     low_price   NUMERIC(18, 8) NOT NULL,
@@ -31,9 +36,9 @@ CREATE TABLE asset_prices (
     volume      NUMERIC(24, 4) NOT NULL,
     PRIMARY KEY (asset_id, timeframe, timestamp)
 );
-SELECT create_hypertable('asset_prices', 'timestamp', chunk_time_interval => INTERVAL '3 months');
+CREATE INDEX IF NOT EXISTS idx_prices_ts_brin ON asset_prices USING BRIN (timestamp);
 
-CREATE TABLE forum_scraped_data (
+CREATE TABLE IF NOT EXISTS forum_scraped_data (
     id               BIGSERIAL PRIMARY KEY,
     asset_id         INT REFERENCES assets(id) ON DELETE CASCADE,
     source           VARCHAR(50)  NOT NULL,
@@ -47,9 +52,10 @@ CREATE TABLE forum_scraped_data (
     created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_post UNIQUE (source, external_id)
 );
-CREATE INDEX idx_forum_asset_time ON forum_scraped_data(asset_id, post_timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_forum_asset_time
+    ON forum_scraped_data(asset_id, post_timestamp DESC);
 
-CREATE TABLE market_alerts (
+CREATE TABLE IF NOT EXISTS market_alerts (
     id                   BIGSERIAL PRIMARY KEY,
     asset_id             INT         NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
     timeframe            VARCHAR(5)  NOT NULL,
@@ -80,12 +86,15 @@ CREATE TABLE market_alerts (
     max_return_reached   NUMERIC(8, 4),
     closed_at            TIMESTAMPTZ,
 
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_alert UNIQUE (asset_id, timeframe, timestamp, engine_version, is_backtest)
 );
-CREATE INDEX idx_alerts_training ON market_alerts(outcome) WHERE outcome IS NOT NULL;
-CREATE INDEX idx_alerts_open     ON market_alerts(asset_id) WHERE outcome IS NULL;
+CREATE INDEX IF NOT EXISTS idx_alerts_training
+    ON market_alerts(outcome) WHERE outcome IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_alerts_open
+    ON market_alerts(asset_id) WHERE outcome IS NULL;
 
-CREATE TABLE alert_evidence (
+CREATE TABLE IF NOT EXISTS alert_evidence (
     alert_id BIGINT NOT NULL REFERENCES market_alerts(id) ON DELETE CASCADE,
     post_id  BIGINT NOT NULL REFERENCES forum_scraped_data(id) ON DELETE CASCADE,
     weight   NUMERIC(5, 4) NOT NULL,               -- contribuição no sentimento agregado
