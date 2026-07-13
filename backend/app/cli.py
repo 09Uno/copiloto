@@ -18,7 +18,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from app.core.config import Asset, Market, Timeframe, watchlist
+from app.core.config import Asset, Market, Timeframe, load_params, watchlist
 from app.ingest import binance, gaps, store, yahoo
 
 app = typer.Typer(add_completion=False, help="Motor quantamental — uso próprio")
@@ -226,6 +226,160 @@ def cotahist_b3(
         )
         for tk, n in sorted(alarmes, key=lambda x: -x[1])[:15]:
             console.print(f"  {tk}: {n}")
+
+
+def _linha_metricas(m, rotulo: str) -> list[str]:
+    if m is None or m.n == 0:
+        return [rotulo, "—", "—", "—", "—", "—", "—", "—"]
+    cor = "green" if m.tem_borda else "red"
+    return [
+        rotulo,
+        str(m.n),
+        f"{m.taxa_acerto:.0f}%",
+        f"[{cor}]{m.expectancia_r:+.3f}R[/{cor}]",
+        f"{m.profit_factor:.2f}",
+        f"{m.cagr_pct:+.1f}%",
+        f"{m.max_drawdown_pct:.1f}%",
+        f"{m.sharpe:.2f}",
+    ]
+
+
+@app.command()
+def backtest(
+    estrategia: str = typer.Argument("MEAN_REV", help="MEAN_REV ou XSECT."),
+    market: Market = typer.Option(Market.CRYPTO),
+    timeframe: str = typer.Option("15m"),
+) -> None:
+    """FASE 2 — o portão de decisão. Há borda líquida de custos FORA da amostra?
+
+    Um resultado bom dentro da amostra não significa nada: com parâmetros suficientes dá para
+    ajustar qualquer curva ao passado. Só o out-of-sample tem voto.
+    """
+    from backtest import runner
+
+    tf = Timeframe(timeframe)
+    p = load_params(market, tf)
+
+    console.print(
+        f"\n[bold]{estrategia}[/bold] · {market.value} {tf.value} · "
+        f"engine {p.engine_version}\n[dim]custos: {p.custos.ida_e_volta(market):.2f}% ida e "
+        f"volta · risco 1%/operação · entrada na ABERTURA seguinte[/dim]\n"
+    )
+
+    if estrategia.upper() == "XSECT":
+        r = runner.cross_sectional(p, market, tf)
+    else:
+        r = runner.mean_rev(p, market, tf)
+
+    if r.trades.empty:
+        console.print("[yellow]nenhum trade gerado[/yellow]")
+        raise typer.Exit(1)
+
+    t = Table("Amostra", "Trades", "Acerto", "Expectância", "P.Factor", "CAGR", "Max DD",
+              "Sharpe")
+    t.add_row(*_linha_metricas(r.dentro, "dentro (calibra)"))
+    t.add_row(*_linha_metricas(r.fora, "[bold]FORA (julga)[/bold]"))
+    console.print(t)
+
+    if r.fora:
+        f = r.fora
+        console.print(
+            f"[dim]fora da amostra: {f.periodo} · TP {f.tp} / SL {f.sl} / TIMEOUT "
+            f"{f.timeout} · ganho médio {f.ganho_medio_r:+.2f}R · perda média "
+            f"{f.perda_media_r:+.2f}R[/dim]"
+        )
+        # Significância: sem isto, ruído com média positiva vira "borda" — e é assim que se
+        # acaba operando sorte com dinheiro de verdade.
+        sig = "[green]significante[/green]" if f.significante else "[red]RUÍDO[/red]"
+        console.print(
+            f"[dim]expectância {f.expectancia_r:+.3f}R · t = {f.t_stat:.2f} → {sig}[/dim]"
+        )
+        if f.buy_hold_cagr_pct is not None:
+            bh = "[green]bate[/green]" if f.bate_buy_hold else "[red]PERDE PARA[/red]"
+            console.print(
+                f"[dim]buy & hold no período: {f.buy_hold_cagr_pct:+.1f}% a.a. → a "
+                f"estratégia {bh} o buy & hold[/dim]"
+            )
+
+    cor = "green" if r.veredito == "TEM BORDA" else "red"
+    console.print(f"\n  VEREDITO (out-of-sample): [bold {cor}]{r.veredito}[/bold {cor}]\n")
+
+
+@app.command()
+def calibrar(
+    estrategia: str = typer.Argument("XSECT"),
+    market: Market = typer.Option(Market.B3),
+    timeframe: str = typer.Option("1d"),
+) -> None:
+    """Grid search — calibra NO IN-SAMPLE e só depois abre o out-of-sample.
+
+    Escolher o melhor pelo out-of-sample é a fraude mais comum do backtest: com combinações
+    suficientes, a sorte produz uma que parece genial no período de teste, e o out-of-sample
+    vira mais um conjunto de treino.
+    """
+    from backtest import grid, runner
+
+    tf = Timeframe(timeframe)
+    p = load_params(market, tf)
+
+    if estrategia.upper() == "XSECT":
+        espaco = {
+            "risco.stop_atr_mult": [1.5, 2.5, 3.5],       # o stop apertado é suspeito nº1
+            "risco.rr_minimo": [1.0, 1.5, 2.0],
+            "cross_sectional.janela_reversao": [3, 5, 10],
+            "cross_sectional.n_extremos": [5, 10, 20],
+        }
+        executar = lambda pp: runner.cross_sectional(pp, market, tf)  # noqa: E731
+    else:
+        espaco = {
+            "bandas.n_sigma_entrada": [2.0, 2.5, 3.0],
+            "volume.z_minimo": [1.0, 2.0],
+            "risco.stop_atr_mult": [1.5, 2.5],
+            "regime.r2_max_lateral": [0.2, 0.3, 0.5],
+        }
+        executar = lambda pp: runner.mean_rev(pp, market, tf)  # noqa: E731
+
+    n = 1
+    for v in espaco.values():
+        n *= len(v)
+    console.print(
+        f"\n[bold]Calibrando {estrategia}[/bold] · {market.value} {tf.value} · "
+        f"{n} combinações\n[dim]a escolha olha SÓ o in-sample[/dim]\n"
+    )
+
+    pontos = grid.rodar(p, espaco, executar)
+    if not pontos:
+        console.print("[red]nenhuma combinação produziu trades[/red]")
+        raise typer.Exit(1)
+
+    console.print(grid.tabela(pontos).to_string(index=False))
+
+    melhor = grid.melhor_in_sample(pontos)
+    if melhor is None:
+        console.print("\n[yellow]nenhuma combinação com trades suficientes[/yellow]")
+        raise typer.Exit(1)
+
+    console.print(f"\n[bold]Escolhido pelo in-sample:[/bold] {melhor.config}")
+    console.print(
+        f"  in-sample:  {melhor.dentro.n} trades · "
+        f"expectância {melhor.dentro.expectancia_r:+.3f}R · PF {melhor.dentro.profit_factor:.2f}"
+    )
+
+    if melhor.fora is None or melhor.fora.n < 30:
+        console.print("\n[yellow]out-of-sample sem amostra suficiente[/yellow]")
+        raise typer.Exit(1)
+
+    f = melhor.fora
+    cor = "green" if f.tem_borda else "red"
+    console.print(
+        f"  [bold]OUT-OF-SAMPLE:[/bold] {f.n} trades · "
+        f"[{cor}]expectância {f.expectancia_r:+.3f}R[/{cor}] · PF {f.profit_factor:.2f} · "
+        f"acerto {f.taxa_acerto:.0f}% · CAGR {f.cagr_pct:+.1f}% · DD {f.max_drawdown_pct:.0f}%"
+    )
+    console.print(
+        f"\n  VEREDITO: [bold {cor}]"
+        f"{'TEM BORDA' if f.tem_borda else 'SEM BORDA'}[/bold {cor}]\n"
+    )
 
 
 @app.command()
