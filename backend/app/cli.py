@@ -310,6 +310,45 @@ def backtest(
 
 
 @app.command()
+def sentimento(
+    ano_ini: int = typer.Option(2017),
+    ano_fim: int = typer.Option(2026),
+) -> None:
+    """Coleta o tom diário da imprensa (GDELT) — a última hipótese não testada.
+
+    O preço já foi reprovado: AUC ~0,50 fora da amostra. A tese quantamental original diz que
+    o TEXTO carrega informação que o preço não tem. Aqui coletamos o dado para MEDIR isso.
+    """
+    from app.core.gdelt_map import CONSULTAS
+    from app.ingest import gdelt
+
+    console.print(
+        f"[bold]GDELT[/bold] · {len(CONSULTAS)} empresas · {ano_ini}–{ano_fim}\n"
+        "[dim]só papéis com cobertura real de imprensa — papel sem notícia não tem "
+        "sentimento a medir[/dim]\n"
+    )
+
+    ok, vazios = 0, []
+    for tk in CONSULTAS:
+        df = gdelt.fetch(tk, ano_ini, ano_fim)
+        if df.empty:
+            vazios.append(tk)
+            console.print(f"  [red]![/red] {tk.removesuffix('.SA')}: sem dado")
+            continue
+        ok += 1
+        art = df["n_artigos"].sum()
+        console.print(
+            f"  [green]+[/green] {tk.removesuffix('.SA'):<8} "
+            f"[dim]{len(df):>5} dias · {art:>9,.0f} artigos · "
+            f"tom médio {df['tom'].mean():+.2f}[/dim]"
+        )
+
+    console.print(f"\n[bold green]{ok}[/bold green] empresas com série de tom.")
+    if vazios:
+        console.print(f"[dim]sem cobertura: {', '.join(v.removesuffix('.SA') for v in vazios)}[/dim]")
+
+
+@app.command()
 def informacao(
     horizonte: int = typer.Option(10, help="Pregões à frente."),
     corte: str = typer.Option("2019-12-31", help="Fim do in-sample."),
@@ -387,6 +426,88 @@ def informacao(
                 f"{r['retorno_medio']:+.2f}%",
             )
         console.print(c)
+
+
+@app.command()
+def info_sentimento(
+    horizonte: int = typer.Option(10, help="Pregões à frente."),
+    corte: str = typer.Option("2022-12-31", help="Fim do in-sample."),
+) -> None:
+    """O TEXTO carrega informação que o preço não tem? (a tese original do projeto)
+
+    Mesmo teste que reprovou o preço — AUC e calibração por decil, fora da amostra. Mudar a
+    régua entre um candidato e outro é a forma mais fácil de aprovar o que se quer aprovar.
+    """
+    from app.core import b3_universe
+    from app.ingest import gdelt
+    from backtest import information, sentiment_test
+
+    tom = gdelt.load_todos()
+    if tom.empty:
+        console.print("[yellow]sem dado do GDELT. Rode `dands sentimento` antes.[/yellow]")
+        raise typer.Exit(1)
+
+    painel, _ = b3_universe.load()
+    m = sentiment_test.montar(painel, tom)
+    if m.empty:
+        console.print("[red]nenhuma sobreposição entre preço e notícia[/red]")
+        raise typer.Exit(1)
+
+    lim = pd.Timestamp(corte, tz="UTC")
+    console.print(
+        f"\n[bold]O texto informa?[/bold] · retorno {horizonte} pregões à frente\n"
+        f"[dim]{len(m):,} dias-papel · {m['ticker'].nunique()} empresas · "
+        f"{m['n_artigos'].sum():,.0f} artigos[/dim]\n"
+    )
+
+    t = Table("Feature de texto", "n FORA", "AUC dentro", "AUC FORA", "Spread FORA", "Veredito")
+    achou = False
+    for col, nome in sentiment_test.FEATURES:
+        dentro = information.avaliar(m[m["dia"] <= lim], col, horizonte)
+        fora = information.avaliar(m[m["dia"] > lim], col, horizonte)
+        if dentro is None or fora is None:
+            t.add_row(nome, "—", "—", "—", "—", "[dim]sem amostra[/dim]")
+            continue
+
+        mesmo_sinal = (dentro.auc - 0.5) * (fora.auc - 0.5) > 0
+        vale = fora.informativa and mesmo_sinal
+        achou |= vale
+        cor = "green" if vale else "dim"
+
+        t.add_row(
+            nome, f"{fora.n:,}",
+            f"{dentro.auc:.3f}",
+            f"[{cor}]{fora.auc:.3f}[/{cor}]",
+            f"{fora.spread:+.2f} p.p.",
+            f"[{cor}]{'INFORMA' if vale else 'ruído'}[/{cor}]",
+        )
+    console.print(t)
+    console.print(
+        "[dim]AUC 0.500 = cara ou coroa. Preço deu 0.487–0.515 fora da amostra.[/dim]"
+    )
+
+    melhor = "tom_z"
+    fora = information.avaliar(m[m["dia"] > lim], melhor, horizonte)
+    if fora:
+        console.print(
+            f"\n[bold]Calibração[/bold] · tom vs. a própria história (FORA da amostra)\n"
+            "[dim]a tese diz: tom MAIS NEGATIVO deveria vir antes de queda; "
+            "tom positivo, antes de alta[/dim]"
+        )
+        c = Table("Decil", "Faixa (z)", "n", "% que subiu", f"Retorno médio ({horizonte}d)")
+        for _, r in fora.tabela.iterrows():
+            c.add_row(
+                str(int(r["decil"]) + 1),
+                f"{r['faixa_min']:+.2f} a {r['faixa_max']:+.2f}",
+                f"{int(r['n']):,}",
+                f"{r['taxa_alta']:.1f}%",
+                f"{r['retorno_medio']:+.2f}%",
+            )
+        console.print(c)
+
+    cor = "green" if achou else "red"
+    veredito = "O TEXTO INFORMA" if achou else "O TEXTO TAMBÉM NÃO INFORMA"
+    console.print(f"\n  VEREDITO: [bold {cor}]{veredito}[/bold {cor}]\n")
 
 
 @app.command()
