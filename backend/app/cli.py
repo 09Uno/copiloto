@@ -642,6 +642,95 @@ def calibrar(
 
 
 @app.command()
+def cvm_baixar(
+    anos: int = typer.Option(6, help="Profundidade, em anos."),
+) -> None:
+    """Baixa os balanços oficiais da CVM (ITR + DFP), com a DATA DE PUBLICAÇÃO.
+
+    É a fundação de tudo: sem balanço não há tese verificável nem preço teto. E o `DT_RECEB`
+    é o que torna a análise honesta — sem ele, o sistema "saberia" em 30/09 um resultado que
+    só foi publicado em 12/11.
+    """
+    from app.ingest import cvm
+
+    ano_fim = datetime.now(UTC).year
+    lista = list(range(ano_fim - anos + 1, ano_fim + 1))
+
+    console.print(f"[bold]CVM[/bold] · ITR + DFP · {lista[0]}–{lista[-1]}\n")
+
+    mapa = cvm.mapa_tickers()
+    console.print(f"  mapa oficial CNPJ → ticker: [bold]{len(mapa)}[/bold] papéis\n")
+
+    painel = cvm.load(lista)
+    if painel.empty:
+        console.print("[red]nada baixado[/red]")
+        raise typer.Exit(1)
+
+    com_data = painel["dt_receb"].notna().mean() * 100
+    console.print(
+        f"\n[bold green]{len(painel):,}[/bold green] linhas · "
+        f"{painel['cnpj'].nunique()} empresas · "
+        f"{com_data:.0f}% com data de publicação"
+    )
+    for doc, n in painel["doc"].value_counts().items():
+        console.print(f"  [dim]{doc}: {n:,}[/dim]")
+
+
+@app.command()
+def fundamentos(
+    tickers: str = typer.Argument("PETR4,ITUB4,TAEE3,SAPR4,CMIG4,BBDC4,KLBN4"),
+) -> None:
+    """Mostra os fundamentos calculados a partir do balanço da CVM.
+
+    A validação que importa: se esses números não baterem com a realidade, tudo o que vem
+    em cima deles é lixo.
+    """
+    from app.engine import fundamentos as fd
+    from app.ingest import cvm
+
+    ano_fim = datetime.now(UTC).year
+    painel = cvm.load(list(range(ano_fim - 5, ano_fim + 1)))
+    mapa = cvm.mapa_tickers()
+
+    t = Table("Papel", "Base", "Publicado", "LPA", "VPA", "DPA", "ROE", "Payout",
+              "DívLíq/EBIT", "Margem")
+    for tk in [x.strip().upper() for x in tickers.split(",")]:
+        linha = mapa[mapa["ticker"] == tk]
+        if linha.empty:
+            t.add_row(tk, "[red]sem CNPJ[/red]", "", "", "", "", "", "", "", "")
+            continue
+
+        cnpj = linha["cnpj"].iloc[0]
+        f = fd.calcular(painel[painel["cnpj"] == cnpj], tk, linha["empresa"].iloc[0])
+        if f is None:
+            t.add_row(tk, "[red]sem balanço[/red]", "", "", "", "", "", "", "", "")
+            continue
+
+        def n(v, fmt="{:.2f}"):
+            return fmt.format(v) if v is not None else "—"
+
+        pay = f.payout
+        cor_pay = "red" if (pay and pay > 1.0) else "white"
+
+        t.add_row(
+            tk,
+            f"{f.data_base:%Y-%m}",
+            f"{f.data_publicacao:%Y-%m-%d}",
+            n(f.lpa), n(f.vpa), n(f.dpa),
+            n(f.roe, "{:.1%}"),
+            f"[{cor_pay}]{n(pay, '{:.0%}')}[/{cor_pay}]",
+            n(f.divida_ebit, "{:.1f}x"),
+            n(f.margem, "{:.1%}"),
+        )
+    console.print(t)
+    console.print(
+        "[dim]DPA vem do FLUXO DE CAIXA auditado (dividendos + JCP pagos ÷ ações), "
+        "não do Yahoo —\nque reporta 1 pagamento de R$ 0,1125 para a SAPR4 e payout de "
+        "425% para a KLBN4.[/dim]"
+    )
+
+
+@app.command()
 def valor(
     market: Market = typer.Option(Market.B3, help="B3 ou US."),
     top: int = typer.Option(15, help="Quantos exibir."),
