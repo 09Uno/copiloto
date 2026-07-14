@@ -310,6 +310,86 @@ def backtest(
 
 
 @app.command()
+def informacao(
+    horizonte: int = typer.Option(10, help="Pregões à frente."),
+    corte: str = typer.Option("2019-12-31", help="Fim do in-sample."),
+) -> None:
+    """As features CARREGAM INFORMAÇÃO? (a pergunta que o backtest de lucro não responde)
+
+    Se o decil de cima terminar bem mais vezes que o de baixo, existe informação — e a
+    probabilidade que a ferramenta mostrar é honesta. Se todos derem ~50%, qualquer "68% de
+    chance" na tela seria mentira com cara de ciência. É também o portão do ML: sem sinal para
+    aprender, nenhum modelo inventa um.
+    """
+    from app.core import b3_universe
+    from backtest import information
+
+    p = load_params(Market.B3, Timeframe.D1)
+    painel, _ = b3_universe.load()
+
+    console.print("[dim]calculando features de 373 papéis…[/dim]")
+    f = information.painel_features(painel, p)
+    lim = pd.Timestamp(corte, tz="UTC")
+
+    features = [
+        ("deviation_from_mean", "distância da média (σ)"),
+        ("volume_z_score", "z-score do volume"),
+        ("regression_slope", "inclinação (log-preço)"),
+        ("regression_r2", "nitidez da tendência (R²)"),
+        ("atr_pct", "volatilidade (ATR/preço)"),
+    ]
+
+    console.print(
+        f"\n[bold]Discriminação[/bold] · retorno {horizonte} pregões à frente · "
+        f"{len(f):,} observações\n"
+    )
+
+    t = Table("Feature", "AUC dentro", "AUC FORA", "Spread FORA", "Veredito")
+    for col, nome in features:
+        dentro = information.avaliar(f[f["timestamp"] <= lim], col, horizonte)
+        fora = information.avaliar(f[f["timestamp"] > lim], col, horizonte)
+        if dentro is None or fora is None:
+            continue
+
+        # Só vale se discriminar FORA da amostra — e no mesmo sentido de dentro.
+        mesmo_sinal = (dentro.auc - 0.5) * (fora.auc - 0.5) > 0
+        vale = fora.informativa and mesmo_sinal
+        cor = "green" if vale else "dim"
+
+        t.add_row(
+            nome,
+            f"{dentro.auc:.3f}",
+            f"[{cor}]{fora.auc:.3f}[/{cor}]",
+            f"{fora.spread:+.2f} p.p.",
+            f"[{cor}]{'INFORMA' if vale else 'ruído'}[/{cor}]",
+        )
+    console.print(t)
+    console.print(
+        "[dim]AUC 0.500 = moeda honesta. Acima de 0.53 já é informação real e rara em "
+        "finanças.\nSpread = retorno médio do decil de cima menos o do decil de baixo.[/dim]"
+    )
+
+    # A tabela de calibração da feature central da tese: a distância da média.
+    fora = information.avaliar(f[f["timestamp"] > lim], "deviation_from_mean", horizonte)
+    if fora:
+        console.print(
+            "\n[bold]Calibração da tese central[/bold] (distância da média, FORA da amostra)\n"
+            "[dim]a tese diz: quanto MAIS NEGATIVO o desvio, MAIS o papel deveria subir "
+            "depois[/dim]"
+        )
+        c = Table("Decil", "Faixa (σ)", "n", "% que subiu", f"Retorno médio ({horizonte}d)")
+        for _, r in fora.tabela.iterrows():
+            c.add_row(
+                str(int(r["decil"]) + 1),
+                f"{r['faixa_min']:+.2f} a {r['faixa_max']:+.2f}",
+                f"{int(r['n']):,}",
+                f"{r['taxa_alta']:.1f}%",
+                f"{r['retorno_medio']:+.2f}%",
+            )
+        console.print(c)
+
+
+@app.command()
 def carteira(
     market: Market = typer.Option(Market.B3),
     corte: str = typer.Option("2019-12-31", help="Fim do in-sample."),
