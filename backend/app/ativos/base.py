@@ -37,12 +37,24 @@ class Classe(StrEnum):
     RENDA_FIXA = "RENDA_FIXA"
 
 
+# --- MÉTRICAS CANÔNICAS: o vocabulário comum entre as classes.
+#
+# O NOME é a interface; o RÓTULO é só apresentação. Uma ação chama de "dividendo por ação" e um
+# FII chama de "rendimento por cota" — mas os dois registram sob o nome `dpa`, e por isso o
+# motor de decisão calcula yield-on-cost para os dois **sem saber qual é qual**.
+#
+# Foi assim que o bug apareceu: o FII registrava como `rendimento_12m`, o motor procurava `dpa`,
+# e o yield-on-cost simplesmente não saía. O contrato tinha vazado.
+RENDA_POR_UNIDADE = "dpa"  # dividendo por ação · rendimento por cota · cupom
+VALOR_PATRIMONIAL = "vpa"  # VPA da ação · VP da cota do FII
+
+
 @dataclass(frozen=True)
 class Metrica:
     """Um número que a classe sabe calcular, e o que ele significa."""
 
-    nome: str            # 'payout', 'roe', 'vacancia' — é isto que a tese referencia
-    rotulo: str
+    nome: str            # 'payout', 'roe', 'p_vp' — é isto que a tese e a decisão referenciam
+    rotulo: str          # o que aparece na tela; pode variar por classe
     valor: float | None
     formato: str = "{:.2f}"
     melhor_alto: bool = True   # ROE alto é bom; dívida alta, não

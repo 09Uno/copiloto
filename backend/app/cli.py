@@ -659,15 +659,19 @@ def teto(
     from app.ativos import base as ab
     from app.ativos.acao import Acao
     from app.ativos.decisao import Posicao, simular
+    from app.ativos.fii import FII
     from app.ativos.sem_criterio import ETF, Cripto, RendaFixa
-    from app.ingest import cvm
+    from app.ingest import cvm, cvm_fii
 
     tk = ticker.strip().upper()
     classe = ab.classificar(tk)
-
     ano = datetime.now(UTC).year
-    ab.registrar(Acao(cvm.load(list(range(ano - 5, ano + 1))), cvm.mapa_tickers(),
-                      precos=_precos_hist([tk])))
+
+    if classe is ab.Classe.FII:
+        ab.registrar(FII(cvm_fii.load([ano - 1, ano]), rendimentos=_dividendos([tk])))
+    elif classe in (ab.Classe.ACAO, ab.Classe.BDR):
+        ab.registrar(Acao(cvm.load(list(range(ano - 5, ano + 1))), cvm.mapa_tickers(),
+                          precos=_precos_hist([tk])))
     for c in (Cripto(), ETF(), RendaFixa()):
         ab.registrar(c)
 
@@ -738,6 +742,24 @@ def teto(
         for a in av.alertas:
             console.print(f"  · {a}")
     console.print()
+
+
+def _dividendos(tickers: list[str]) -> dict:
+    """Distribuições pagas. Para FII o yfinance é CONFIÁVEL — o pagamento é mensal e simples.
+    (Nas ações ele erra feio, porque não sabe tratar o JCP; lá o dado vem da CVM.)"""
+    import pandas as pd
+    import yfinance as yf
+
+    out = {}
+    for tk in tickers:
+        try:
+            d = yf.Ticker(f"{tk}.SA").dividends
+        except Exception:  # noqa: BLE001
+            continue
+        if d is not None and len(d):
+            d.index = pd.to_datetime(d.index).tz_localize(None)
+            out[tk] = d
+    return out
 
 
 def _precos_hist(tickers: list[str]) -> dict:

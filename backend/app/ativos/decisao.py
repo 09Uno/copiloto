@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.ativos import base
 from app.ativos.base import Avaliacao
 
 
@@ -69,7 +70,9 @@ def simular(
     if av.preco is None or av.preco <= 0 or quantidade <= 0:
         return None
 
-    dpa = av.metrica("dpa")
+    # Nome CANÔNICO: a ação registra o dividendo por ação e o FII o rendimento por cota, ambos
+    # sob `dpa`. É por isso que este módulo funciona para os dois sem saber qual é qual.
+    dpa = av.metrica(base.RENDA_POR_UNIDADE)
 
     q0 = pos.quantidade if pos else 0.0
     cm0 = pos.custo_medio if pos else 0.0
