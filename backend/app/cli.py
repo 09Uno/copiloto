@@ -642,6 +642,124 @@ def calibrar(
 
 
 @app.command()
+def teto(
+    ticker: str = typer.Argument(..., help="Ex: TAEE3"),
+    meta: float = typer.Option(8.0, help="Sua meta de yield, em %."),
+    quantidade: float = typer.Option(0, help="Simular a compra de N unidades."),
+    custo_medio: float = typer.Option(0, help="Seu custo médio atual (0 = posição nova)."),
+    qtd_atual: float = typer.Option(0, help="Quantas você já tem."),
+) -> None:
+    """PREÇO TETO e simulação de aporte — o critério ancorado no SEU objetivo.
+
+    Não prevê nada. Pergunta: a este preço, o dividendo entrega o retorno que VOCÊ decidiu
+    que quer?
+    """
+    import yfinance as yf
+
+    from app.ativos import base as ab
+    from app.ativos.acao import Acao
+    from app.ativos.decisao import Posicao, simular
+    from app.ativos.sem_criterio import ETF, Cripto, RendaFixa
+    from app.ingest import cvm
+
+    tk = ticker.strip().upper()
+    classe = ab.classificar(tk)
+
+    ano = datetime.now(UTC).year
+    ab.registrar(Acao(cvm.load(list(range(ano - 5, ano + 1))), cvm.mapa_tickers(),
+                      precos=_precos_hist([tk])))
+    for c in (Cripto(), ETF(), RendaFixa()):
+        ab.registrar(c)
+
+    impl = ab.para(classe)
+    if impl is None:
+        console.print(f"[red]classe {classe.value} sem implementação[/red]")
+        raise typer.Exit(1)
+
+    preco = None
+    try:
+        info = yf.Ticker(f"{tk}.SA").info or {}
+        preco = info.get("currentPrice") or info.get("regularMarketPrice")
+    except Exception:  # noqa: BLE001
+        pass
+
+    av = impl.avaliar(tk, preco, meta / 100.0)
+
+    console.print(f"\n[bold]{tk}[/bold] [dim]({classe.value})[/dim]  ·  "
+                  f"preço R$ {preco:.2f}" if preco else f"\n[bold]{tk}[/bold]")
+
+    # A classe que não sabe avaliar DIZ que não sabe — não inventa um score.
+    if av.sem_criterio:
+        console.print(f"\n[yellow]SEM CRITÉRIO DE PREÇO[/yellow]\n  {av.sem_criterio}\n")
+        raise typer.Exit(0)
+
+    t = Table("Métrica", "Valor")
+    for m in av.metricas.values():
+        if m.valor is not None:
+            t.add_row(m.rotulo, str(m))
+    console.print(t)
+
+    if av.teto:
+        cor = "green" if av.abaixo_do_teto else "red"
+        console.print(
+            f"\n  [bold]PREÇO TETO: R$ {av.teto.valor:.2f}[/bold]  "
+            f"[dim]({av.teto.criterio})[/dim]"
+        )
+        console.print(
+            f"  preço hoje R$ {preco:.2f} → "
+            f"[{cor}]{'ABAIXO' if av.abaixo_do_teto else 'ACIMA'} do teto[/{cor}] "
+            f"[dim]({av.margem_pct:+.1f}%)[/dim]"
+        )
+
+    if quantidade > 0:
+        pos = Posicao(tk, qtd_atual, custo_medio) if qtd_atual > 0 else None
+        ap = simular(av, pos, quantidade)
+        if ap:
+            cor = {"DENTRO DO TETO": "green", "ACIMA DO TETO": "red"}.get(ap.veredito, "yellow")
+            console.print(f"\n[bold]Simulação:[/bold] comprar {quantidade:g} a "
+                          f"R$ {ap.preco:.2f} = R$ {ap.desembolso:,.2f}")
+            if pos:
+                console.print(
+                    f"  custo médio: R$ {ap.custo_medio_antes:.2f} → "
+                    f"[bold]R$ {ap.custo_medio_depois:.2f}[/bold]"
+                )
+                if ap.yoc_antes and ap.yoc_depois:
+                    console.print(
+                        f"  yield-on-cost: {ap.yoc_antes:.2%} → "
+                        f"[bold]{ap.yoc_depois:.2%}[/bold]  "
+                        f"[dim](o mercado paga {ap.yield_atual:.2%} hoje)[/dim]"
+                    )
+            console.print(f"\n  [bold {cor}]{ap.veredito}[/bold {cor}]")
+            for m in ap.motivos:
+                console.print(f"    · {m}")
+
+    if av.alertas and quantidade == 0:
+        console.print("\n[yellow]Ressalvas:[/yellow]")
+        for a in av.alertas:
+            console.print(f"  · {a}")
+    console.print()
+
+
+def _precos_hist(tickers: list[str]) -> dict:
+    """Fechamento histórico, para os múltiplos contra a própria história do papel."""
+    import pandas as pd
+    import yfinance as yf
+
+    out = {}
+    for tk in tickers:
+        try:
+            h = yf.Ticker(f"{tk}.SA").history(period="10y", interval="1d",
+                                              auto_adjust=False)
+        except Exception:  # noqa: BLE001
+            continue
+        if not h.empty and "Close" in h:
+            s = pd.Series(h["Close"].to_numpy(dtype=float),
+                          index=pd.DatetimeIndex(h.index).tz_localize(None))
+            out[tk] = s
+    return out
+
+
+@app.command()
 def cvm_baixar(
     anos: int = typer.Option(6, help="Profundidade, em anos."),
 ) -> None:
