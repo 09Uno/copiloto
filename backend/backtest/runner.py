@@ -107,3 +107,24 @@ def cross_sectional(
         fora=metrics.compute(fora),
         trades=t,
     )
+
+
+def momentum(
+    p: Params, market: Market, tf: Timeframe, cache: core.CacheXSect | None = None
+) -> Resultado:
+    from app.core import b3_universe
+
+    painel, comp = b3_universe.load()
+    inicio = pd.Timestamp("2010-01-01", tz="UTC")
+
+    t = core.to_frame(core.run_momentum(painel, comp, p, market, inicio, cache=cache))
+    dentro, fora = _split(t)
+
+    return Resultado(
+        estrategia="MOM",
+        mercado=market.value,
+        timeframe=tf.value,
+        dentro=metrics.compute(dentro),
+        fora=metrics.compute(fora),
+        trades=t,
+    )

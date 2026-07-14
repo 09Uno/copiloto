@@ -82,6 +82,16 @@ class CrossSectional(BaseModel):
     min_universo: int
 
 
+class Momentum(BaseModel):
+    janela_formacao: int
+    gap: int
+    n_extremos: int
+    holding: int
+    stop_atr_mult: float
+    min_universo: int
+    long_only: bool = True
+
+
 class Custos(BaseModel):
     cripto_taker_pct: float
     acoes_br_pct: float
@@ -112,6 +122,7 @@ class Params(BaseModel, frozen=True):
     risco: Risco
     custos: Custos
     cross_sectional: CrossSectional
+    momentum: Momentum
 
     @property
     def min_velas(self) -> int:

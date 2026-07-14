@@ -236,6 +236,92 @@ def run_cross_sectional(
     return trades
 
 
+def run_momentum(
+    painel: pd.DataFrame,
+    composicao: pd.DataFrame,
+    p: Params,
+    market: Market,
+    inicio: pd.Timestamp,
+    cache: CacheXSect | None = None,
+) -> list[Trade]:
+    """Momentum 12-1 (SPEC §13), rebalanceamento MENSAL sobre o universo point-in-time.
+
+    Mensal e não semanal: a tese leva meses para se realizar, e girar a carteira toda semana
+    só pagaria corretagem. Posições se sobrepõem — é o desenho, não um bug.
+    """
+    from app.core import b3_universe
+    from app.engine import momentum
+
+    custo = p.custos.ida_e_volta(market)
+    holding = p.momentum.holding
+
+    cache = cache or CacheXSect(painel, p, inicio)
+    por_ticker = cache.por_ticker
+
+    # Último pregão de cada mês.
+    datas = pd.DatetimeIndex(sorted(d for d in painel["timestamp"].unique() if d >= inicio))
+    rebal = list(pd.Series(datas, index=datas).resample("ME").last().dropna())
+
+    trades: list[Trade] = []
+    for d in rebal:
+        membros = b3_universe.membros_em(composicao, d)
+        if len(membros) < p.momentum.min_universo:
+            continue
+
+        rank = momentum.rank_universo(painel, d, membros, p)
+        if rank.empty:
+            continue
+
+        atrs = {}
+        for tk in rank["ticker"]:
+            f = por_ticker.get(tk)
+            i = cache.pos.get(tk, {}).get(d) if f is not None else None
+            if i is None:
+                continue
+            a = f["atr"].iloc[i]
+            if pd.notna(a) and a > 0:
+                atrs[tk] = float(a)
+
+        for _, s in momentum.generate(rank, atrs, d, p, custo).iterrows():
+            f = por_ticker[s["ticker"]]
+            i = cache.pos[s["ticker"]].get(d)
+            if i is None or i + 1 >= len(f):
+                continue
+
+            entrada = float(f["open"].iloc[i + 1])  # abertura seguinte, como sempre
+            if entrada <= 0:
+                continue
+
+            side = AlertType(s["alert_type"])
+            alvo, stop = float(s["take_profit_price"]), float(s["stop_loss_price"])
+            sinal = 1.0 if side is AlertType.BUY else -1.0
+            if sinal * (entrada - stop) <= 0:
+                continue
+
+            r = barriers.evaluate(
+                f, entry_pos=i, side=side, trigger=entrada,
+                take_profit=alvo, stop_loss=stop,
+                horizonte=holding, custo_ida_volta_pct=custo,
+            )
+            if r is None:
+                continue
+
+            trades.append(
+                Trade(
+                    ticker=s["ticker"], strategy="MOM", side=side.value,
+                    entrada_em=f["timestamp"].iloc[i + 1],
+                    saida_em=f["timestamp"].iloc[r.exit_index],
+                    entrada=entrada, saida=r.exit_price, stop=stop, alvo=alvo,
+                    outcome=r.outcome.value,
+                    retorno_liquido_pct=r.retorno_liquido_pct,
+                    r_multiple=_r_multiple(entrada, stop, r.retorno_liquido_pct),
+                    velas=r.velas_ate_saida, score=int(s["calculated_score"]),
+                )
+            )
+
+    return trades
+
+
 def to_frame(trades: list[Trade]) -> pd.DataFrame:
     if not trades:
         return pd.DataFrame(

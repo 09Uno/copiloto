@@ -266,8 +266,11 @@ def backtest(
         f"volta · risco 1%/operação · entrada na ABERTURA seguinte[/dim]\n"
     )
 
-    if estrategia.upper() == "XSECT":
+    e = estrategia.upper()
+    if e == "XSECT":
         r = runner.cross_sectional(p, market, tf)
+    elif e in ("MOM", "MOMENTUM"):
+        r = runner.momentum(p, market, tf)
     else:
         r = runner.mean_rev(p, market, tf)
 

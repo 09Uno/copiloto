@@ -52,11 +52,27 @@ default:
     slippage_pct: 0.05 # ← chute. A Fase 4 mede o slippage REAL e substitui (SPEC §8.4).
 
   # Estratégia cross-sectional (SPEC §11): rankeia o universo em vez de esperar cada papel
-  # cruzar um limiar sozinho. É o que de fato funciona em ações.
+  # cruzar um limiar sozinho.
   cross_sectional:
     janela_reversao: 5 # retorno acumulado dos últimos N pregões
     n_extremos: 10 # opera os N mais castigados (compra) e os N mais esticados (venda)
     min_universo: 30 # abaixo disso o ranking não tem significado
+
+  # MOMENTUM 12-1 (SPEC §13). Hipótese DECLARADA ANTES de rodar — não é pesca.
+  momentum:
+    janela_formacao: 252 # ~12 meses de pregão
+    gap: 21 # PULA o mês mais recente. Sem isso, a reversão de curto prazo
+      # (que já testamos e não tem borda) contamina o ranking e as duas
+      # anomalias se cancelam — o teste não mediria nada.
+    n_extremos: 15 # compra os N vencedores, vende os N perdedores
+    holding: 63 # ~3 meses. A saída é por TEMPO: momentum não tem alvo de preço.
+    stop_atr_mult: 5.0 # LARGO de propósito. Stop apertado mata momentum: a tese precisa
+      # de meses, e 1,5×ATR expulsa a posição no primeiro tropeço (foi o
+      # que estrangulou o cross-sectional: 1.096 stops contra 248 alvos).
+    min_universo: 30
+    long_only: true # Investidor pessoa física NÃO shorteia 15 papéis da B3 todo mês.
+      # Testar a perna vendida é testar uma operação que nunca seria
+      # executada — e é justamente ela que produz os crashes do momentum.
 
 perfis:
   CRYPTO:15m: {}
