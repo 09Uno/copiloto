@@ -40,6 +40,8 @@ class Acao(ClasseDeAtivo):
             "vpa": "valor patrimonial por ação",
             "dpa": "dividendo por ação (12m)",
             "roe": "retorno sobre o patrimônio",
+            "cresc_lucro": "crescimento do lucro (12m vs 12m anteriores)",
+            "cresc_receita": "crescimento da receita (12m vs 12m anteriores)",
             "payout": "% do lucro distribuído",
             "divida_ebit": "dívida líquida / EBIT",
             "margem": "margem líquida",
@@ -81,6 +83,9 @@ class Acao(ClasseDeAtivo):
             Metrica("vpa", "VPA", f.vpa, "R$ {:.2f}"),
             Metrica("dpa", "DPA (12m)", f.dpa, "R$ {:.2f}"),
             Metrica("roe", "ROE", f.roe, "{:.1%}"),
+            # "A empresa cresce" é o motivo de compra mais comum — e o menos verificado.
+            Metrica("cresc_lucro", "Cresc. lucro", f.crescimento_lucro, "{:+.1%}"),
+            Metrica("cresc_receita", "Cresc. receita", f.crescimento_receita, "{:+.1%}"),
             Metrica("payout", "Payout", f.payout, "{:.0%}", melhor_alto=False),
             Metrica("divida_ebit", "Dív.Líq/EBIT", f.divida_ebit, "{:.1f}x",
                     melhor_alto=False),

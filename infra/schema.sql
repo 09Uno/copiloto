@@ -242,12 +242,23 @@ CREATE TABLE IF NOT EXISTS tese_pilares (
     qualitativo     BOOLEAN     NOT NULL DEFAULT FALSE,
     descricao       TEXT,
 
+    -- **APOSTA EM RECUPERAÇÃO.** "O capex acabou, a dívida vai cair e o lucro volta."
+    -- Uma tese assim NASCE FALSA por definição — e sem prazo ela vira desculpa eterna
+    -- ("ainda não virou, mas vai virar"). Com prazo, ela é honesta: *hoje é falso, eu aceito
+    -- isso, mas se não virar até esta data, eu estava errado.*
+    --
+    -- Separa três coisas que o sistema confundiria: pilar DE PÉ, pilar que CAIU, e APOSTA EM
+    -- CURSO. Só a segunda é notícia ruim; a terceira ainda tem tempo — até não ter mais.
+    prazo           DATE,
+
     CONSTRAINT pilar_coerente CHECK (
         (qualitativo AND descricao IS NOT NULL)
         OR (NOT qualitativo AND metrica IS NOT NULL AND operador IS NOT NULL
             AND limite IS NOT NULL)
     )
 );
+
+ALTER TABLE tese_pilares ADD COLUMN IF NOT EXISTS prazo DATE;
 
 CREATE TABLE IF NOT EXISTS tese_checagens (
     id              BIGSERIAL PRIMARY KEY,

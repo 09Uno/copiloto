@@ -736,10 +736,22 @@ def tese_criar(
             console.print(f"  [red]✗[/red] {r.pilar}  [dim]hoje {r.valor:g}[/dim]")
         console.print(
             "\n  Ou o limite está errado, ou você não deveria estar comprando.\n"
-            "  [dim]Ajuste o limite — ou, se comprar assim mesmo é uma decisão consciente,\n"
-            "  use --aceitar-quebrado \"o motivo\". Ele fica registrado.[/dim]\n"
+            "  [dim]Ajuste o limite — ou declare como APOSTA, com prazo:\n"
+            "     --pilar \"divida_ebit<5.0@2028-06\"\n"
+            "  Se comprar assim mesmo é decisão consciente, use --aceitar-quebrado "
+            '"o motivo".[/dim]\n'
         )
         raise typer.Exit(1)
+
+    # Aposta em curso NÃO é tese quebrada — ela nasce falsa de propósito, e tem prazo.
+    if v0.apostas_em_curso:
+        console.print("\n[yellow]Esta tese contém APOSTA(S) em recuperação:[/yellow]")
+        for r in v0.apostas_em_curso:
+            console.print(f"  [yellow]⏳[/yellow] {r.pilar}  [dim]hoje {r.valor:g}[/dim]")
+        console.print(
+            "  [dim]Hoje é falso — e tudo bem, era esperado. Mas o relógio está correndo:\n"
+            "  se não virar até o prazo, foi uma aposta PERDIDA, não 'ainda vai virar'.[/dim]"
+        )
 
     async def _run() -> None:
         conn = await repo.conectar()
@@ -805,16 +817,18 @@ def tese_checar(
                     icone = {
                         motor.Estado.OK: "[green]✓[/green]",
                         motor.Estado.CAIU: "[red]✗[/red]",
+                        motor.Estado.APOSTA_EM_CURSO: "[yellow]⏳[/yellow]",
+                        motor.Estado.APOSTA_PERDIDA: "[bold red]💀[/bold red]",
                         motor.Estado.NAO_VERIFICAVEL: "[dim]—[/dim]",
                         motor.Estado.PERGUNTAR: "[yellow]?[/yellow]",
                     }[r.estado]
                     extra = f"  [dim]{r.motivo}[/dim]" if r.motivo else ""
                     console.print(f"    {icone} {r.pilar}{extra}")
+
+                    sem_veredito = (motor.Estado.NAO_VERIFICAVEL, motor.Estado.PERGUNTAR)
                     await repo.registrar_checagem(
                         conn, t.id, r.pilar.id, r.valor,
-                        None if r.estado in (motor.Estado.NAO_VERIFICAVEL,
-                                             motor.Estado.PERGUNTAR)
-                        else r.estado is motor.Estado.OK,
+                        None if r.estado in sem_veredito else r.estado is motor.Estado.OK,
                     )
 
                 console.print(f"\n  [bold {cor}]{v.de_pe}/{v.total_verificaveis} "

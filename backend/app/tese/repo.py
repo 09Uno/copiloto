@@ -49,12 +49,12 @@ async def criar(
                 """
                 INSERT INTO tese_pilares
                     (tese_id, metrica, operador, limite, valor_na_criacao,
-                     qualitativo, descricao)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                     qualitativo, descricao, prazo)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 """,
                 tese_id, p.metrica, p.operador, p.limite,
                 valores.get(p.metrica) if p.metrica else None,
-                p.qualitativo, p.descricao,
+                p.qualitativo, p.descricao, p.prazo,
             )
     return tese_id
 
@@ -74,7 +74,8 @@ async def ativas(conn: asyncpg.Connection, ticker: str | None = None) -> list[Te
     for t in linhas:
         ps = await conn.fetch(
             """
-            SELECT id, metrica, operador, limite, valor_na_criacao, qualitativo, descricao
+            SELECT id, metrica, operador, limite, valor_na_criacao, qualitativo, descricao,
+                   prazo
               FROM tese_pilares WHERE tese_id = $1 ORDER BY id
             """,
             t["id"],
@@ -95,6 +96,7 @@ async def ativas(conn: asyncpg.Connection, ticker: str | None = None) -> list[Te
                             if p["valor_na_criacao"] is not None else None
                         ),
                         qualitativo=p["qualitativo"], descricao=p["descricao"],
+                        prazo=p["prazo"],
                     )
                     for p in ps
                 ],

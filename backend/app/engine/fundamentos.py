@@ -99,6 +99,32 @@ class Fundamento:
     acoes: float | None
     financeira: bool = False  # banco/seguradora: EBIT e dívida líquida não se aplicam
 
+    # Os 12 meses ANTERIORES — é a comparação que transforma "cresce" em número.
+    lucro_12m_anterior: float | None = None
+    receita_12m_anterior: float | None = None
+
+    @property
+    def crescimento_lucro(self) -> float | None:
+        """Lucro dos últimos 12m contra os 12m anteriores.
+
+        "A empresa cresce" é o motivo mais comum de compra — e um dos mais raramente
+        verificados. Aqui vira um número que cai sozinho quando deixa de ser verdade.
+
+        Base negativa (a empresa dava prejuízo) não produz percentual com sentido: sair de
+        -100 para -50 não é "crescer 50%".
+        """
+        a, b = self.lucro_12m, self.lucro_12m_anterior
+        if a is None or b is None or b <= 0:
+            return None
+        return a / b - 1
+
+    @property
+    def crescimento_receita(self) -> float | None:
+        a, b = self.receita_12m, self.receita_12m_anterior
+        if a is None or b is None or b <= 0:
+            return None
+        return a / b - 1
+
     @property
     def lpa(self) -> float | None:
         return self.lucro_12m / self.acoes if self.acoes and self.lucro_12m else None
@@ -292,11 +318,21 @@ def calcular(
         s = s[s.index <= ref]
         return float(s.tail(4).sum()) if len(s) >= 4 else None
 
+    def soma12m_anterior(s: pd.Series) -> float | None:
+        """Os 4 trimestres ANTERIORES aos últimos 4 — a base de comparação do crescimento."""
+        if s.empty:
+            return None
+        s = s[s.index <= ref]
+        return float(s.iloc[-8:-4].sum()) if len(s) >= 8 else None
+
     # Lucro por DESCRIÇÃO — é 3.11 na Petrobras e 3.09 no Itaú (ver RE_LUCRO).
     # Filtramos as subcontas (ex.: "das Operações Descontinuadas") pelo nível do código.
     dre_lucro = dre[dre["conta"].str.count(r"\.") <= 1]
-    lucro = soma12m(_fluxo_trimestral(dre_lucro, None, RE_LUCRO))
-    receita = soma12m(_fluxo_trimestral(dre, RECEITA))
+    serie_lucro = _fluxo_trimestral(dre_lucro, None, RE_LUCRO)
+    serie_receita = _fluxo_trimestral(dre, RECEITA)
+
+    lucro = soma12m(serie_lucro)
+    receita = soma12m(serie_receita)
 
     # Só o dividendo PAGO (financiamento, 6.03.*) e só o que chega AO ACIONISTA DA COMPANHIA.
     #   · o recebido de controladas (6.01.*) é entrada de caixa e cancelaria a saída;
@@ -339,4 +375,6 @@ def calcular(
         lucro_12m=lucro, receita_12m=receita, ebit_12m=ebit, dividendos_12m=div,
         patrimonio=patrimonio, divida_liquida=divida_liq, acoes=acoes,
         financeira=financeira,
+        lucro_12m_anterior=soma12m_anterior(serie_lucro),
+        receita_12m_anterior=soma12m_anterior(serie_receita),
     )
