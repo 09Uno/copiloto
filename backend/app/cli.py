@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+import pandas as pd
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -306,6 +307,57 @@ def backtest(
 
     cor = "green" if r.veredito == "TEM BORDA" else "red"
     console.print(f"\n  VEREDITO (out-of-sample): [bold {cor}]{r.veredito}[/bold {cor}]\n")
+
+
+@app.command()
+def carteira(
+    market: Market = typer.Option(Market.B3),
+    corte: str = typer.Option("2019-12-31", help="Fim do in-sample."),
+) -> None:
+    """Momentum como CARTEIRA — compra os vencedores, SEGURA, sem stop. Bate o índice?
+
+    É a forma em que a tese é de fato afirmada (Jegadeesh & Titman), e a que corresponde ao
+    que um investidor faz. O teste anterior usava stop loss — e estopou 291 dos 843 trades,
+    expulsando a posição por quedas temporárias que uma carteira simplesmente aguentaria.
+    """
+    from backtest import portfolio
+
+    p = load_params(market, Timeframe.D1)
+    console.print(
+        f"\n[bold]Carteira Momentum 12-1[/bold] · {market.value} · "
+        f"{p.momentum.n_extremos} papéis · rebalanceamento mensal · [bold]sem stop[/bold]"
+    )
+
+    mom, bench = portfolio.rodar(p, market)
+    lim = pd.Timestamp(corte, tz="UTC")
+
+    for rotulo, ate in (("DENTRO da amostra", True), ("FORA da amostra", False)):
+        a = portfolio.fatiar(mom, lim)[0 if ate else 1]
+        b = portfolio.fatiar(bench, lim)[0 if ate else 1]
+        if len(a.retornos) < 12:
+            continue
+
+        venceu = a.cagr > b.cagr
+        cor = "green" if venceu else "red"
+        console.print(f"\n[bold]{rotulo}[/bold] [dim]({len(a.retornos)} meses)[/dim]")
+
+        t = Table("Carteira", "CAGR", "Vol", "Sharpe", "Max DD")
+        for c, destaque in ((a, True), (b, False)):
+            nome = f"[{cor}]{c.nome}[/{cor}]" if destaque else f"[dim]{c.nome}[/dim]"
+            t.add_row(nome, f"{c.cagr:+.1f}%", f"{c.vol:.1f}%", f"{c.sharpe:.2f}",
+                      f"{c.max_dd:.1f}%")
+        console.print(t)
+
+        console.print(
+            f"  [{cor}]{'BATE' if venceu else 'PERDE PARA'} o universo[/{cor}] "
+            f"[dim]por {a.cagr - b.cagr:+.1f} p.p. ao ano[/dim]"
+        )
+
+    console.print(
+        "\n[dim]Benchmark = universo igualmente ponderado: MESMA base de preço (sem "
+        "dividendo) e mesmo custo de giro.\nComparar com o Ibovespa seria injusto contra "
+        "nós — ele é índice de RETORNO TOTAL, reinveste dividendos.[/dim]\n"
+    )
 
 
 @app.command()
