@@ -72,10 +72,13 @@ def _env(chave: str) -> str | None:
     return None
 
 
-def _cliente() -> tuple[httpx.Client, str]:
-    url = (_env("FINCONTROL_URL") or "").rstrip("/")
-    user = _env("FINCONTROL_USER")
-    senha = _env("FINCONTROL_PASS")
+def _cliente(
+    url: str | None = None, usuario: str | None = None, senha: str | None = None
+) -> tuple[httpx.Client, str]:
+    """Credenciais explícitas (SaaS, uma por usuário) ou do .env (uso local, um usuário só)."""
+    url = (url or _env("FINCONTROL_URL") or "").rstrip("/")
+    user = usuario or _env("FINCONTROL_USER")
+    senha = senha or _env("FINCONTROL_PASS")
     if not (url and user and senha):
         raise RuntimeError(
             "Faltam credenciais do FinControl em backend/.env:\n"
@@ -195,9 +198,11 @@ def _custo_medio(transacoes: pd.DataFrame) -> list[Posicao]:
     ]
 
 
-def puxar() -> Carteira:
+def puxar(
+    url: str | None = None, usuario: str | None = None, senha: str | None = None
+) -> Carteira:
     """A carteira real, direto do FinControl."""
-    c, _ = _cliente()
+    c, _ = _cliente(url, usuario, senha)
     try:
         r = c.get("/api/summary")
         r.raise_for_status()
