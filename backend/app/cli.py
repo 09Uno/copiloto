@@ -329,7 +329,10 @@ def calibrar(
             "cross_sectional.janela_reversao": [3, 5, 10],
             "cross_sectional.n_extremos": [5, 10, 20],
         }
-        executar = lambda pp: runner.cross_sectional(pp, market, tf)  # noqa: E731
+        # Indicadores não dependem de nenhum parâmetro do grid: computa-se UMA vez.
+        console.print("[dim]pré-computando indicadores dos 373 papéis…[/dim]")
+        cache = runner.cache_xsect(p)
+        executar = lambda pp: runner.cross_sectional(pp, market, tf, cache)  # noqa: E731
     else:
         espaco = {
             "bandas.n_sigma_entrada": [2.0, 2.5, 3.0],

@@ -127,6 +127,28 @@ def run_mean_rev(
     return trades
 
 
+class CacheXSect:
+    """Tudo que NÃO depende dos parâmetros do grid, computado uma única vez.
+
+    O grid varia stop, R:R, janela de reversão e nº de extremos — e **nenhum deles muda os
+    indicadores**. Recalcular ATR e regressão dos 373 papéis a cada uma das 81 combinações é
+    puro desperdício: era o que fazia o grid levar mais de uma hora.
+    """
+
+    def __init__(self, painel: pd.DataFrame, p: Params, inicio: pd.Timestamp) -> None:
+        self.por_ticker: dict[str, pd.DataFrame] = {}
+        self.pos: dict[str, dict] = {}
+        for tk, g in painel.groupby("ticker"):
+            g = g.sort_values("timestamp").reset_index(drop=True)
+            f = indicators.compute(g, p)
+            self.por_ticker[tk] = f
+            self.pos[tk] = {t: i for i, t in enumerate(f["timestamp"])}
+
+        datas = sorted(d for d in painel["timestamp"].unique() if d >= inicio)
+        self.rebal = [d for d in datas if pd.Timestamp(d).dayofweek == 4]  # sextas
+        self.rankings: dict[tuple, pd.DataFrame] = {}  # (janela, data) → ranking
+
+
 def run_cross_sectional(
     painel: pd.DataFrame,
     composicao: pd.DataFrame,
@@ -134,6 +156,7 @@ def run_cross_sectional(
     market: Market,
     tf: Timeframe,
     inicio: pd.Timestamp,
+    cache: CacheXSect | None = None,
 ) -> list[Trade]:
     """Reversão cross-sectional (SPEC §11), sobre o universo POINT-IN-TIME."""
     from app.core import b3_universe
@@ -142,46 +165,39 @@ def run_cross_sectional(
     horizonte = p.risco.horizonte_max[tf.value]
     custo = p.custos.ida_e_volta(market)
 
-    # Pré-computa OHLC + ATR por papel uma única vez.
-    por_ticker: dict[str, pd.DataFrame] = {}
-    for tk, g in painel.groupby("ticker"):
-        g = g.sort_values("timestamp").reset_index(drop=True)
-        f = indicators.compute(g, p)
-        por_ticker[tk] = f
-
-    datas = sorted(d for d in painel["timestamp"].unique() if d >= inicio)
-    rebal = [d for d in datas if pd.Timestamp(d).dayofweek == 4]  # sextas
+    cache = cache or CacheXSect(painel, p, inicio)
+    por_ticker = cache.por_ticker
 
     trades: list[Trade] = []
-    for d in rebal:
+    for d in cache.rebal:
         membros = b3_universe.membros_em(composicao, d)
         if len(membros) < p.cross_sectional.min_universo:
             continue
 
-        rank = cross_sectional.rank_universo(painel, d, membros, p)
+        # O ranking só depende da janela de reversão — reaproveitável entre combinações.
+        chave = (p.cross_sectional.janela_reversao, d)
+        if chave not in cache.rankings:
+            cache.rankings[chave] = cross_sectional.rank_universo(painel, d, membros, p)
+        rank = cache.rankings[chave]
         if rank.empty:
             continue
 
         atrs = {}
         for tk in rank["ticker"]:
             f = por_ticker.get(tk)
-            if f is None:
+            i = cache.pos.get(tk, {}).get(d) if f is not None else None
+            if i is None:
                 continue
-            linha = f.index[f["timestamp"] == d]
-            if len(linha):
-                a = f.loc[linha[0], "atr"]
-                if pd.notna(a) and a > 0:
-                    atrs[tk] = float(a)
+            a = f["atr"].iloc[i]
+            if pd.notna(a) and a > 0:
+                atrs[tk] = float(a)
 
         sinais = cross_sectional.generate(rank, atrs, d, p, custo)
 
         for _, s in sinais.iterrows():
             f = por_ticker[s["ticker"]]
-            idx = f.index[f["timestamp"] == d]
-            if not len(idx):
-                continue
-            i = int(idx[0])
-            if i + 1 >= len(f):
+            i = cache.pos[s["ticker"]].get(d)
+            if i is None or i + 1 >= len(f):
                 continue
 
             entrada = float(f["open"].iloc[i + 1])

@@ -22,6 +22,14 @@ from backtest.metrics import Metricas
 FRACAO_IN_SAMPLE = 0.70  # 70% do histórico calibra; os últimos 30% julgam
 
 
+def cache_xsect(p: Params) -> core.CacheXSect:
+    """Pré-computa o que não depende dos parâmetros do grid. Reutilizado nas 81 combinações."""
+    from app.core import b3_universe
+
+    painel, _ = b3_universe.load()
+    return core.CacheXSect(painel, p, pd.Timestamp("2010-01-01", tz="UTC"))
+
+
 @dataclass
 class Resultado:
     estrategia: str
@@ -78,13 +86,17 @@ def mean_rev(p: Params, market: Market, tf: Timeframe) -> Resultado:
     )
 
 
-def cross_sectional(p: Params, market: Market, tf: Timeframe) -> Resultado:
+def cross_sectional(
+    p: Params, market: Market, tf: Timeframe, cache: core.CacheXSect | None = None
+) -> Resultado:
     from app.core import b3_universe
 
     painel, comp = b3_universe.load()
     inicio = pd.Timestamp("2010-01-01", tz="UTC")
 
-    t = core.to_frame(core.run_cross_sectional(painel, comp, p, market, tf, inicio))
+    t = core.to_frame(
+        core.run_cross_sectional(painel, comp, p, market, tf, inicio, cache=cache)
+    )
     dentro, fora = _split(t)
 
     return Resultado(
