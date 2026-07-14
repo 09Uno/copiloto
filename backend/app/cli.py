@@ -665,25 +665,36 @@ def carteira_real() -> None:
         return
 
     total = sum(p.investido for p in c.posicoes)
-    t = Table("Ativo", "Qtd", "Custo médio", "Investido", "% carteira", "Proventos")
+    t = Table("Ativo", "Categoria", "Qtd", "Custo médio", "Investido", "% carteira",
+              "Recebido", "A receber")
     for p in c.posicoes:
+        futuro = c.a_receber.get(p.ticker, 0)
         t.add_row(
-            p.ticker, f"{p.quantidade:g}", f"R$ {p.custo_medio:.2f}",
-            f"R$ {p.investido:,.2f}", f"{p.investido / total:.1%}",
-            f"R$ {c.proventos_por_ticker.get(p.ticker, 0):,.2f}",
+            p.ticker, (p.categoria or "")[:18], f"{p.quantidade:g}",
+            f"R$ {p.custo_medio:.2f}", f"R$ {p.investido:,.2f}",
+            f"{p.investido / total:.1%}",
+            f"R$ {c.recebidos.get(p.ticker, 0):,.2f}",
+            f"[dim]R$ {futuro:,.2f}[/dim]" if futuro else "",
         )
     console.print(t)
 
-    vendas = fincontrol.vendas_no_mes(c)
     console.print(
         f"[dim]{len(c.transacoes)} operações · investido R$ {total:,.2f} · "
-        f"proventos R$ {sum(c.proventos_por_ticker.values()):,.2f}[/dim]"
+        f"recebido R$ {sum(c.recebidos.values()):,.2f}[/dim]"
     )
-    # Isenção de IR: até R$ 20 mil VENDIDOS no mês, o ganho em ações é isento.
+    if c.a_receber:
+        console.print(
+            f"[dim]a receber (declarado, ainda não pago): "
+            f"R$ {sum(c.a_receber.values()):,.2f} — é seu, mas não está na conta[/dim]"
+        )
+
+    # Isenção de IR: até R$ 20 mil VENDIDOS no mês, o ganho em AÇÃO é isento (FII não tem).
+    vendas = fincontrol.vendas_no_mes(c)
     if vendas > 0:
         cor = "red" if vendas > 20_000 else ("yellow" if vendas > 15_000 else "dim")
         console.print(
-            f"[{cor}]vendas neste mês: R$ {vendas:,.2f} / R$ 20.000 de isenção[/{cor}]"
+            f"[{cor}]vendas de AÇÃO neste mês: R$ {vendas:,.2f} / R$ 20.000 de isenção"
+            f"[/{cor}]"
         )
 
 
