@@ -194,6 +194,74 @@ CREATE TABLE IF NOT EXISTS equity_snapshots (
 );
 
 -- ============================================================================
+-- TESE — o núcleo do copiloto de decisão (PLANO.md M1)
+-- ============================================================================
+--
+-- Você escreve POR QUE comprou. Com uma regra dura: **cada pilar precisa ser verificável.**
+--   ❌ "vai subir" · "empresa boa"        — não é tese, é torcida. Não dá para checar.
+--   ✅ "payout < 80%" · "P/VP < 1,0"      — cada pedaço é um número.
+--
+-- O sistema relê o balanço a cada trimestre e checa PILAR POR PILAR. Quando um cai, avisa —
+-- e devolve a SUA decisão com os fatos atualizados. Ele nunca diz "venda".
+--
+-- É isso que impede as duas coisas mais caras da bolsa:
+--   · fazer preço médio numa tese MORTA (a ação não está "mais barata" — está PIOR);
+--   · vender um vencedor cuja tese está INTACTA (o mercado só ficou mal-humorado).
+
+CREATE TABLE IF NOT EXISTS teses (
+    id                  BIGSERIAL PRIMARY KEY,
+    ticker              VARCHAR(20) NOT NULL,
+    classe              VARCHAR(15) NOT NULL,      -- ACAO | FII | ETF | CRIPTO | ...
+    resumo              TEXT        NOT NULL,      -- por que comprei, em uma frase
+    meta_yield          NUMERIC(5, 4),             -- a SUA meta — de onde sai o preço teto
+    preco_na_criacao    NUMERIC(18, 8),
+    criada_em           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- Encerrar a tese é uma DECISÃO, e ela fica registrada com o motivo. É assim que se
+    -- constrói o histórico do próprio julgamento: "das minhas 14 teses, quantas se
+    -- confirmaram? eu acerto mais em elétrica ou em banco?"
+    encerrada_em        TIMESTAMPTZ,
+    motivo_encerramento TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_teses_ativas ON teses(ticker) WHERE encerrada_em IS NULL;
+
+CREATE TABLE IF NOT EXISTS tese_pilares (
+    id              BIGSERIAL PRIMARY KEY,
+    tese_id         BIGINT      NOT NULL REFERENCES teses(id) ON DELETE CASCADE,
+
+    -- `metrica` é o nome CANÔNICO que a classe do ativo expõe ('payout', 'p_vp', 'roe').
+    -- O motor NÃO sabe o que é payout — ele pergunta à classe. Por isso uma classe nova traz
+    -- métricas novas e você escreve pilares com elas sem ninguém tocar no motor.
+    metrica         VARCHAR(40),
+    operador        VARCHAR(2),                    -- '<' | '>' | '<=' | '>='
+    limite          NUMERIC(18, 6),
+    valor_na_criacao NUMERIC(18, 6),               -- o que era quando você comprou
+
+    -- Pilar que só VOCÊ pode julgar ("monopólio regulado", "gestão competente"). O sistema
+    -- não finge que sabe: ele te PERGUNTA de tempos em tempos.
+    qualitativo     BOOLEAN     NOT NULL DEFAULT FALSE,
+    descricao       TEXT,
+
+    CONSTRAINT pilar_coerente CHECK (
+        (qualitativo AND descricao IS NOT NULL)
+        OR (NOT qualitativo AND metrica IS NOT NULL AND operador IS NOT NULL
+            AND limite IS NOT NULL)
+    )
+);
+
+CREATE TABLE IF NOT EXISTS tese_checagens (
+    id              BIGSERIAL PRIMARY KEY,
+    tese_id         BIGINT      NOT NULL REFERENCES teses(id) ON DELETE CASCADE,
+    pilar_id        BIGINT      NOT NULL REFERENCES tese_pilares(id) ON DELETE CASCADE,
+    checado_em      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    valor           NUMERIC(18, 6),
+    passou          BOOLEAN,                       -- NULL = não deu para verificar
+    data_base       DATE,                          -- o trimestre do balanço
+    data_publicacao DATE                           -- quando virou público (point-in-time)
+);
+CREATE INDEX IF NOT EXISTS idx_checagens_tese ON tese_checagens(tese_id, checado_em DESC);
+
+-- ============================================================================
 -- ANALOGIA HISTÓRICA (SPEC §9)
 -- ============================================================================
 

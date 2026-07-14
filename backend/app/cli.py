@@ -641,6 +641,217 @@ def calibrar(
     )
 
 
+tese_app = typer.Typer(help="A TESE: por que você comprou — e se ainda vale.")
+app.add_typer(tese_app, name="tese")
+
+
+def _avaliar(tk: str, meta: float):
+    """Monta a classe do ativo e avalia. Usado pelo teto e pela tese."""
+    import yfinance as yf
+
+    from app.ativos import base as ab
+    from app.ativos.acao import Acao
+    from app.ativos.fii import FII
+    from app.ativos.sem_criterio import ETF, Cripto, RendaFixa
+    from app.ingest import cvm, cvm_fii
+
+    classe = ab.classificar(tk)
+    ano = datetime.now(UTC).year
+
+    if classe is ab.Classe.FII:
+        ab.registrar(FII(cvm_fii.load([ano - 1, ano]), rendimentos=_dividendos([tk])))
+    elif classe in (ab.Classe.ACAO, ab.Classe.BDR):
+        ab.registrar(Acao(cvm.load(list(range(ano - 5, ano + 1))), cvm.mapa_tickers(),
+                          precos=_precos_hist([tk])))
+    for c in (Cripto(), ETF(), RendaFixa()):
+        ab.registrar(c)
+
+    preco = None
+    try:
+        info = yf.Ticker(f"{tk}.SA").info or {}
+        preco = info.get("currentPrice") or info.get("regularMarketPrice")
+    except Exception:  # noqa: BLE001
+        pass
+
+    impl = ab.para(classe)
+    return impl, impl.avaliar(tk, preco, meta / 100.0), classe
+
+
+@tese_app.command("criar")
+def tese_criar(
+    ticker: str = typer.Argument(...),
+    resumo: str = typer.Option(..., "--resumo", "-r", help="Por que você comprou, em uma frase."),
+    pilar: list[str] = typer.Option([], "--pilar", "-p",
+                                    help="Verificável: 'payout<80%'. Repita para vários."),
+    pilar_q: list[str] = typer.Option([], "--pilar-q",
+                                      help="Qualitativo: só você julga. 'monopólio regulado'."),
+    meta: float = typer.Option(8.0, help="Sua meta de yield, em %."),
+    aceitar_quebrado: str = typer.Option(
+        None, "--aceitar-quebrado",
+        help="Registrar mesmo com pilar já violado — exige o motivo, e ele fica gravado.",
+    ),
+) -> None:
+    """Registra a tese. **Cada pilar precisa ser verificável.**
+
+    ❌ "vai subir" · "empresa boa"  — não é tese, é torcida. Não dá para checar.
+    ✅ "payout<80%" · "p_vp<1.0"    — cada pedaço é um número.
+    """
+    from app.tese import motor, repo
+
+    tk = ticker.strip().upper()
+    impl, av, classe = _avaliar(tk, meta)
+    disponiveis = impl.metricas_disponiveis()
+
+    if not disponiveis and pilar:
+        console.print(
+            f"[yellow]{classe.value} não tem métrica verificável.[/yellow]\n"
+            f"  {av.sem_criterio or ''}\n"
+            "  Use apenas --pilar-q (qualitativo), ou não registre tese para esta classe."
+        )
+        raise typer.Exit(1)
+
+    try:
+        pilares = [motor.parse_pilar(p, disponiveis) for p in pilar]
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+
+    pilares += [
+        motor.Pilar(id=None, metrica=None, operador=None, limite=None,
+                    qualitativo=True, descricao=q)
+        for q in pilar_q
+    ]
+    if not pilares:
+        console.print("[red]uma tese sem pilares não é uma tese.[/red]")
+        raise typer.Exit(1)
+
+    # --- GUARDA-CORPO NA CRIAÇÃO
+    # Uma tese que já NASCE com um pilar violado é uma contradição: ou o limite está errado,
+    # ou você não deveria estar comprando. Deixar passar em silêncio seria começar mentindo
+    # para si mesmo — e é exatamente o autoengano que este sistema existe para impedir.
+    v0 = motor.verificar(av, resumo, pilares)
+    if v0.cairam and not aceitar_quebrado:
+        console.print("\n[bold red]Esta tese JÁ NASCE QUEBRADA.[/bold red]\n")
+        for r in v0.cairam:
+            console.print(f"  [red]✗[/red] {r.pilar}  [dim]hoje {r.valor:g}[/dim]")
+        console.print(
+            "\n  Ou o limite está errado, ou você não deveria estar comprando.\n"
+            "  [dim]Ajuste o limite — ou, se comprar assim mesmo é uma decisão consciente,\n"
+            "  use --aceitar-quebrado \"o motivo\". Ele fica registrado.[/dim]\n"
+        )
+        raise typer.Exit(1)
+
+    async def _run() -> None:
+        conn = await repo.conectar()
+        try:
+            texto = resumo
+            if aceitar_quebrado:
+                # Fica GRAVADO na tese. É muito mais difícil se enganar por escrito.
+                texto += f"  [pilar quebrado aceito: {aceitar_quebrado}]"
+            tid = await repo.criar(
+                conn, tk, classe.value, texto, meta / 100.0, av.preco, pilares,
+                valores={n: av.metrica(n) for n in disponiveis},
+            )
+        finally:
+            await conn.close()
+
+        console.print(f"\n[bold green]Tese #{tid} registrada[/bold green] · {tk} · "
+                      f"R$ {av.preco:.2f}" if av.preco else f"\nTese #{tid} · {tk}")
+        console.print(f"  [italic]{resumo}[/italic]\n")
+        for p in pilares:
+            v = av.metrica(p.metrica) if not p.qualitativo else None
+            agora = f"  [dim](hoje: {v:g})[/dim]" if v is not None else ""
+            marca = "?" if p.qualitativo else "·"
+            console.print(f"  {marca} {p}{agora}")
+        console.print()
+
+    asyncio.run(_run())
+
+
+@tese_app.command("checar")
+def tese_checar(
+    ticker: str = typer.Argument(None, help="Vazio = todas as teses ativas."),
+) -> None:
+    """Relê os fatos e checa PILAR POR PILAR. Nunca diz "venda" — devolve a SUA decisão."""
+    from app.tese import motor, repo
+
+    tk = ticker.strip().upper() if ticker else None
+
+    async def _run() -> None:
+        conn = await repo.conectar()
+        try:
+            teses = await repo.ativas(conn, tk)
+            if not teses:
+                console.print("[yellow]nenhuma tese ativa.[/yellow]")
+                return
+
+            for t in teses:
+                _, av, _ = _avaliar(t.ticker, (t.meta_yield or 0.08) * 100)
+                v = motor.verificar(av, t.resumo, t.pilares)
+
+                cor = "green" if v.intacta else "red"
+                console.print(
+                    f"\n[bold]{t.ticker}[/bold] [dim]#{t.id}[/dim]  "
+                    f"[italic]{t.resumo}[/italic]"
+                )
+                if av.preco and t.preco_na_criacao:
+                    var = (av.preco / t.preco_na_criacao - 1) * 100
+                    console.print(
+                        f"  [dim]R$ {t.preco_na_criacao:.2f} → R$ {av.preco:.2f} "
+                        f"({var:+.1f}%)[/dim]"
+                    )
+
+                for r in v.resultados:
+                    icone = {
+                        motor.Estado.OK: "[green]✓[/green]",
+                        motor.Estado.CAIU: "[red]✗[/red]",
+                        motor.Estado.NAO_VERIFICAVEL: "[dim]—[/dim]",
+                        motor.Estado.PERGUNTAR: "[yellow]?[/yellow]",
+                    }[r.estado]
+                    extra = f"  [dim]{r.motivo}[/dim]" if r.motivo else ""
+                    console.print(f"    {icone} {r.pilar}{extra}")
+                    await repo.registrar_checagem(
+                        conn, t.id, r.pilar.id, r.valor,
+                        None if r.estado in (motor.Estado.NAO_VERIFICAVEL,
+                                             motor.Estado.PERGUNTAR)
+                        else r.estado is motor.Estado.OK,
+                    )
+
+                console.print(f"\n  [bold {cor}]{v.de_pe}/{v.total_verificaveis} "
+                              f"pilares de pé[/bold {cor}]")
+                console.print(f"  [italic]{v.pergunta}[/italic]")
+        finally:
+            await conn.close()
+        console.print()
+
+    asyncio.run(_run())
+
+
+@tese_app.command("listar")
+def tese_listar() -> None:
+    """As teses ativas e as métricas que cada classe permite verificar."""
+    from app.tese import repo
+
+    async def _run() -> None:
+        conn = await repo.conectar()
+        try:
+            teses = await repo.ativas(conn)
+        finally:
+            await conn.close()
+
+        if not teses:
+            console.print("[yellow]nenhuma tese ativa.[/yellow]")
+            return
+
+        t = Table("#", "Papel", "Classe", "Tese", "Pilares")
+        for x in teses:
+            t.add_row(str(x.id), x.ticker, x.classe, x.resumo,
+                      "\n".join(str(p) for p in x.pilares))
+        console.print(t)
+
+    asyncio.run(_run())
+
+
 @app.command()
 def teto(
     ticker: str = typer.Argument(..., help="Ex: TAEE3"),
