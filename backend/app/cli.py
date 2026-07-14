@@ -645,6 +645,48 @@ tese_app = typer.Typer(help="A TESE: por que você comprou — e se ainda vale."
 app.add_typer(tese_app, name="tese")
 
 
+@app.command()
+def carteira_real() -> None:
+    """Puxa a carteira do FinControl — a fonte da verdade. Este sistema só LÊ.
+
+    Registrar a mesma operação em dois lugares faz os dois ficarem desatualizados — e aí o
+    copiloto passa a decidir com base numa carteira que não existe mais.
+    """
+    from app.ingest import fincontrol
+
+    try:
+        c = fincontrol.puxar()
+    except RuntimeError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+
+    if not c.posicoes:
+        console.print("[yellow]nenhuma posição aberta no FinControl.[/yellow]")
+        return
+
+    total = sum(p.investido for p in c.posicoes)
+    t = Table("Ativo", "Qtd", "Custo médio", "Investido", "% carteira", "Proventos")
+    for p in c.posicoes:
+        t.add_row(
+            p.ticker, f"{p.quantidade:g}", f"R$ {p.custo_medio:.2f}",
+            f"R$ {p.investido:,.2f}", f"{p.investido / total:.1%}",
+            f"R$ {c.proventos_por_ticker.get(p.ticker, 0):,.2f}",
+        )
+    console.print(t)
+
+    vendas = fincontrol.vendas_no_mes(c)
+    console.print(
+        f"[dim]{len(c.transacoes)} operações · investido R$ {total:,.2f} · "
+        f"proventos R$ {sum(c.proventos_por_ticker.values()):,.2f}[/dim]"
+    )
+    # Isenção de IR: até R$ 20 mil VENDIDOS no mês, o ganho em ações é isento.
+    if vendas > 0:
+        cor = "red" if vendas > 20_000 else ("yellow" if vendas > 15_000 else "dim")
+        console.print(
+            f"[{cor}]vendas neste mês: R$ {vendas:,.2f} / R$ 20.000 de isenção[/{cor}]"
+        )
+
+
 def _avaliar(tk: str, meta: float):
     """Monta a classe do ativo e avalia. Usado pelo teto e pela tese."""
     import yfinance as yf
