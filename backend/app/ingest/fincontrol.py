@@ -104,6 +104,9 @@ def _cliente() -> tuple[httpx.Client, str]:
 RE_ISO = r"^\d{4}-\d{2}-\d{2}"
 RE_BR = r"^\d{2}/\d{2}/\d{4}$"
 
+# Abaixo disto, uma inconsistência não é erro — é poeira de arredondamento de cripto.
+MATERIAL_BRL = 20.0
+
 
 def _datas(col: pd.Series) -> pd.Series:
     """**O FinControl grava a data em DOIS formatos misturados** — provável resíduo de migração:
@@ -168,10 +171,18 @@ def _custo_medio(transacoes: pd.DataFrame) -> list[Posicao]:
             # Vender mais do que se tem é IMPOSSÍVEL — só acontece se a ordem das transações
             # estiver errada (foi o que o embaralhamento de datas causou). Truncar em zero
             # ESCONDE o problema e deixa cotas fantasma na carteira. Tem de gritar.
-            if q > e["qtd"] + 1e-6:
+            #
+            # **A régua é o VALOR, não a quantidade.** Vender 0,0000079 ETH que não se tem é
+            # poeira de arredondamento (R$ 1,50); vender 100 PETR4 que não se tem são R$ 4 mil
+            # e um erro de verdade. Um alarme por quantidade encheria a tela de ruído de
+            # cripto — e alerta que grita à toa é alerta que você aprende a ignorar, que é a
+            # morte de qualquer sistema de aviso.
+            excesso = q - e["qtd"]
+            if excesso * p > MATERIAL_BRL:
                 print(
                     f"  ! {tk}: venda de {q:g} com apenas {e['qtd']:g} em carteira "
-                    f"({t['data']:%d/%m/%Y}) — ordem das transações ou dado inconsistente"
+                    f"({t['data']:%d/%m/%Y}) — R$ {excesso * p:,.2f} a mais do que existia. "
+                    "Ordem das transações ou dado inconsistente."
                 )
             e["qtd"] = max(0.0, e["qtd"] - q)
             if e["qtd"] <= 1e-9:

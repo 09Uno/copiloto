@@ -89,6 +89,24 @@ def test_posicao_zerada_some_da_carteira():
     ])) == []
 
 
+def test_o_alarme_de_venda_a_descoberto_mede_VALOR_nao_quantidade(capsys):
+    """Vender 0,0000079 ETH que não se tem é poeira (R$ 1,50). Vender 100 PETR4 que não se tem
+    são R$ 4 mil e um erro de verdade. Alarme por quantidade encheria a tela de ruído de
+    cripto — e alerta que grita à toa é alerta que se aprende a ignorar.
+    """
+    _custo_medio(_tx([                       # poeira: silêncio
+        ("01/01/2026", "C", 0.00005, 20_000.0),
+        ("01/02/2026", "V", 0.00008, 20_000.0),   # R$ 0,60 a mais
+    ]))
+    assert "!" not in capsys.readouterr().out
+
+    _custo_medio(_tx([                       # material: alarme
+        ("01/01/2026", "C", 10, 40.0),
+        ("01/02/2026", "V", 110, 40.0),           # R$ 4.000 a mais
+    ]))
+    assert "a mais do que existia" in capsys.readouterr().out
+
+
 def test_a_ORDEM_das_transacoes_decide_o_resultado():
     """Foi isto que o embaralhamento de datas quebrou: com a venda ANTES da compra, o saldo
     truncava em zero e as compras seguintes deixavam cotas fantasma."""

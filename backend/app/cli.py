@@ -646,6 +646,117 @@ app.add_typer(tese_app, name="tese")
 
 
 @app.command()
+def vigia(
+    forcar: bool = typer.Option(
+        False, "--tudo", help="Mostra o estado completo, não só o que mudou."
+    ),
+) -> None:
+    """O LAÇO. Checa as teses contra a carteira real e avisa SÓ o que mudou.
+
+    Sem isto, as teses são um museu: só são checadas se você lembrar de rodar um comando.
+    Você não vai lembrar.
+
+    E o silêncio é uma funcionalidade: se ele avisar toda semana que "a Klabin continua
+    endividada", você aprende a ignorar — e no dia em que algo importante quebrar, vai
+    ignorar também.
+    """
+    from app.ingest import fincontrol
+    from app.tese import motor as tm
+    from app.tese import repo
+    from app.vigia import motor as vm
+    from app.vigia import telegram
+
+    async def _run() -> None:
+        try:
+            cart = fincontrol.puxar()
+        except RuntimeError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
+
+        conn = await repo.conectar()
+        try:
+            teses = await repo.ativas(conn)
+
+            # O estado da ÚLTIMA checagem — é contra ele que comparamos.
+            anterior: dict[int, bool | None] = {}
+            for linha in await conn.fetch(
+                """
+                SELECT DISTINCT ON (pilar_id) pilar_id, passou
+                  FROM tese_checagens ORDER BY pilar_id, checado_em DESC
+                """
+            ):
+                anterior[linha["pilar_id"]] = linha["passou"]
+
+            eventos: list[vm.Evento] = []
+            com_tese = {t.ticker for t in teses}
+
+            for t in teses:
+                _, av, _ = _avaliar(t.ticker, (t.meta_yield or 0.08) * 100)
+                v = tm.verificar(av, t.resumo, t.pilares)
+
+                eventos += vm.diff(v, anterior, av.preco, t.preco_na_criacao)
+
+                for r in v.resultados:
+                    sem_veredito = (tm.Estado.NAO_VERIFICAVEL, tm.Estado.PERGUNTAR)
+                    await repo.registrar_checagem(
+                        conn, t.id, r.pilar.id, r.valor,
+                        None if r.estado in sem_veredito else r.estado is tm.Estado.OK,
+                    )
+
+                if forcar:
+                    console.print(f"\n[dim]{t.ticker}: {v.de_pe}/{v.total_verificaveis} "
+                                  f"pilares de pé[/dim]")
+
+                # Vendeu tudo e a tese continua no ar?
+                if cart.de(t.ticker) is None:
+                    eventos.append(vm.tese_orfa(t.ticker))
+
+            # Comprou e não escreveu por quê? A porta de entrada do autoengano.
+            IGNORAR = {"USDC", "USDT"}  # sobra de viagem, sem tese e tudo bem
+            for p in cart.posicoes:
+                if p.ticker not in com_tese and p.ticker not in IGNORAR and p.investido > 300:
+                    eventos.append(vm.posicao_sem_tese(p.ticker, p.investido))
+
+            # Isenção de IR do mês (só ação; FII paga 20% sempre)
+            vendas = fincontrol.vendas_no_mes(cart)
+            if vendas > 15_000:
+                eventos.append(vm.isencao_ir(vendas))
+        finally:
+            await conn.close()
+
+        eventos = vm.ordenar(eventos)
+
+        if not eventos:
+            console.print(
+                f"\n[green]Nada mudou.[/green] [dim]{len(teses)} teses checadas · "
+                "nenhum pilar caiu, nenhuma aposta venceu o prazo.[/dim]\n"
+                "[dim]O silêncio aqui é o produto: alerta repetido é alerta morto.[/dim]\n"
+            )
+            return
+
+        partes = []
+        for e in eventos:
+            console.print(f"\n{e.icone}  [bold]{e.titulo}[/bold]")
+            for linha in e.corpo.split("\n"):
+                console.print(f"   {linha}")
+            if e.pergunta:
+                console.print(f"   [italic]{e.pergunta}[/italic]")
+
+            partes.append(
+                f"{e.icone} <b>{e.titulo}</b>\n{e.corpo}"
+                + (f"\n\n<i>{e.pergunta}</i>" if e.pergunta else "")
+            )
+
+        console.print()
+        if telegram.enviar("\n\n———\n\n".join(partes)):
+            console.print("[dim]enviado no Telegram.[/dim]\n")
+        elif not telegram.configurado():
+            console.print(f"[dim]{telegram.COMO_CONFIGURAR}[/dim]\n")
+
+    asyncio.run(_run())
+
+
+@app.command()
 def carteira_real() -> None:
     """Puxa a carteira do FinControl — a fonte da verdade. Este sistema só LÊ.
 
