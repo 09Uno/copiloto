@@ -31,8 +31,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# O front (Next.js) roda em outra porta/host. Em produção, restringir à origem real.
-_origens = os.getenv("CORS_ORIGENS", "http://localhost:3000").split(",")
+# O front (Next.js) roda em outra porta/host. localhost e 127.0.0.1 são ORIGENS DISTINTAS para
+# o CORS — liberar só uma faz o fetch do navegador falhar em silêncio. Em produção, restringir
+# à origem real via CORS_ORIGENS.
+_origens = os.getenv(
+    "CORS_ORIGENS", "http://localhost:3000,http://127.0.0.1:3000"
+).split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in _origens],
