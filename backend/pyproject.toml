@@ -21,7 +21,8 @@ dependencies = [
 api = [
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
-    "sqlalchemy[asyncio]>=2.0",
+    "pyjwt>=2.8",
+    "bcrypt>=4.1",
 ]
 dev = ["pytest>=8.2", "ruff>=0.5"]
 
