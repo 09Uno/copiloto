@@ -72,6 +72,74 @@ async def meta_yield(user_id: uuid.UUID, classe: str) -> float:
     return float(row["meta_yield_fii"] if classe == "FII" else row["meta_yield_acao"])
 
 
+async def margem_seguranca(user_id: uuid.UUID) -> float:
+    """O desconto abaixo do teto que define a zona de compra. Default 15% se não houver linha."""
+    async with pool().acquire() as c:
+        v = await c.fetchval(
+            "SELECT margem_seguranca FROM preferencias WHERE user_id = $1", user_id
+        )
+    return float(v) if v is not None else 0.15
+
+
+@dataclass
+class Preferencias:
+    meta_yield_acao: float
+    meta_yield_fii: float
+    margem_seguranca: float
+    email_alertas: bool
+
+
+async def preferencias(user_id: uuid.UUID) -> Preferencias:
+    """Todas as preferências do usuário de uma vez — o que a tela de ajustes edita.
+
+    Se a linha não existir (usuário antigo), devolve os mesmos defaults do schema, para a tela
+    nunca abrir vazia.
+    """
+    async with pool().acquire() as c:
+        row = await c.fetchrow(
+            """
+            SELECT meta_yield_acao, meta_yield_fii, margem_seguranca, email_alertas
+              FROM preferencias WHERE user_id = $1
+            """,
+            user_id,
+        )
+    if not row:
+        return Preferencias(0.06, 0.10, 0.15, True)
+    return Preferencias(
+        float(row["meta_yield_acao"]), float(row["meta_yield_fii"]),
+        float(row["margem_seguranca"]), bool(row["email_alertas"]),
+    )
+
+
+async def atualizar_preferencias(
+    user_id: uuid.UUID,
+    meta_yield_acao: float,
+    meta_yield_fii: float,
+    margem_seguranca: float,
+    email_alertas: bool,
+) -> Preferencias:
+    """Grava as preferências. Faz upsert: um usuário sem linha ainda é ajustável."""
+    async with pool().acquire() as c:
+        row = await c.fetchrow(
+            """
+            INSERT INTO preferencias
+                (user_id, meta_yield_acao, meta_yield_fii, margem_seguranca, email_alertas)
+                 VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (user_id) DO UPDATE
+                    SET meta_yield_acao = EXCLUDED.meta_yield_acao,
+                        meta_yield_fii = EXCLUDED.meta_yield_fii,
+                        margem_seguranca = EXCLUDED.margem_seguranca,
+                        email_alertas = EXCLUDED.email_alertas
+              RETURNING meta_yield_acao, meta_yield_fii, margem_seguranca, email_alertas
+            """,
+            user_id, meta_yield_acao, meta_yield_fii, margem_seguranca, email_alertas,
+        )
+    return Preferencias(
+        float(row["meta_yield_acao"]), float(row["meta_yield_fii"]),
+        float(row["margem_seguranca"]), bool(row["email_alertas"]),
+    )
+
+
 # ---------------------------------------------------------------- posições
 
 
@@ -98,6 +166,30 @@ async def posicoes(user_id: uuid.UUID) -> list[Posicao]:
                 float(r["custo_medio"]), r["fonte"])
         for r in rows
     ]
+
+
+async def tickers_carteira(user_id: uuid.UUID) -> set[str]:
+    """Só os tickers que o usuário TEM — para separar 'na carteira' de 'de olho' (watchlist)."""
+    async with pool().acquire() as c:
+        rows = await c.fetch("SELECT ticker FROM posicoes WHERE user_id = $1", user_id)
+    return {r["ticker"] for r in rows}
+
+
+async def tickers_acompanhados(user_id: uuid.UUID) -> list[tuple[str, bool]]:
+    """Tudo que o usuário acompanha, para o feed: carteira ∪ teses ativas.
+
+    Devolve (ticker, na_carteira) — a carteira ganha, então um ticker que está na carteira E tem
+    tese aparece como na_carteira=True (não como watchlist). Ordenado para o feed sair estável.
+    """
+    async with pool().acquire() as c:
+        pos = await c.fetch("SELECT ticker FROM posicoes WHERE user_id = $1", user_id)
+        tes = await c.fetch(
+            "SELECT DISTINCT ticker FROM teses WHERE user_id = $1 AND encerrada_em IS NULL",
+            user_id,
+        )
+    carteira = {r["ticker"] for r in pos}
+    todos = carteira | {r["ticker"] for r in tes}
+    return sorted((t, t in carteira) for t in todos)
 
 
 async def upsert_posicao(
@@ -166,3 +258,82 @@ async def salvar_fonte(user_id: uuid.UUID, tipo: str, config: dict) -> int:
             """,
             user_id, tipo, json.dumps(config),
         )
+
+
+# ---------------------------------------------------------------- contexto do pilar
+
+
+@dataclass
+class PilarDono:
+    id: int
+    ticker: str
+    descricao: str | None
+    qualitativo: bool
+
+
+async def pilar_do_usuario(user_id: uuid.UUID, pilar_id: int) -> PilarDono | None:
+    """O pilar, SÓ se pertencer a uma tese ativa deste usuário. O JOIN é a guarda de dono —
+    ninguém busca contexto do pilar de outro."""
+    async with pool().acquire() as c:
+        r = await c.fetchrow(
+            """
+            SELECT tp.id, t.ticker, tp.descricao, tp.qualitativo
+              FROM tese_pilares tp JOIN teses t ON t.id = tp.tese_id
+             WHERE tp.id = $1 AND t.user_id = $2 AND t.encerrada_em IS NULL
+            """,
+            pilar_id, user_id,
+        )
+    return PilarDono(r["id"], r["ticker"], r["descricao"], r["qualitativo"]) if r else None
+
+
+def _contexto_dict(r) -> dict:
+    import json
+
+    achados = r["achados"]
+    return {
+        "buscado_em": r["buscado_em"].isoformat(),
+        "nada_mudou": r["nada_mudou"],
+        "achados": json.loads(achados) if isinstance(achados, str) else achados,
+    }
+
+
+async def ultimo_contexto(pilar_id: int) -> dict | None:
+    async with pool().acquire() as c:
+        r = await c.fetchrow(
+            "SELECT buscado_em, nada_mudou, achados FROM contexto_pilar WHERE pilar_id = $1",
+            pilar_id,
+        )
+    return _contexto_dict(r) if r else None
+
+
+async def salvar_contexto(pilar_id: int, nada_mudou: bool, achados: list[dict]) -> None:
+    import json
+
+    async with pool().acquire() as c:
+        await c.execute(
+            """
+            INSERT INTO contexto_pilar (pilar_id, buscado_em, nada_mudou, achados)
+                 VALUES ($1, NOW(), $2, $3)
+            ON CONFLICT (pilar_id) DO UPDATE
+                    SET buscado_em = NOW(),
+                        nada_mudou = EXCLUDED.nada_mudou,
+                        achados = EXCLUDED.achados
+            """,
+            pilar_id, nada_mudou, json.dumps(achados),
+        )
+
+
+async def contextos_do_usuario(user_id: uuid.UUID) -> dict[int, dict]:
+    """A última busca de cada pilar das teses ativas — para o painel mostrar sem N requisições."""
+    async with pool().acquire() as c:
+        rows = await c.fetch(
+            """
+            SELECT cp.pilar_id, cp.buscado_em, cp.nada_mudou, cp.achados
+              FROM contexto_pilar cp
+              JOIN tese_pilares tp ON tp.id = cp.pilar_id
+              JOIN teses t ON t.id = tp.tese_id
+             WHERE t.user_id = $1 AND t.encerrada_em IS NULL
+            """,
+            user_id,
+        )
+    return {r["pilar_id"]: _contexto_dict(r) for r in rows}

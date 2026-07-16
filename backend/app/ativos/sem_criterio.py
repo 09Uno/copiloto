@@ -58,6 +58,24 @@ class ETF(ClasseDeAtivo):
         )
 
 
+class BDR(ClasseDeAtivo):
+    classe = Classe.BDR
+
+    def metricas_disponiveis(self) -> dict[str, str]:
+        return {}  # o balanço está na SEC, não na CVM — sem a ponte, nada a verificar
+
+    def avaliar(self, ticker: str, preco: float | None, meta_yield: float) -> Avaliacao:
+        return Avaliacao(
+            ticker=ticker, classe=self.classe, preco=preco, metricas={}, teto=None,
+            sem_criterio=(
+                "BDR espelha uma empresa de fora (ROXO34 = Nubank). O balanço está na SEC, "
+                "não na CVM — sem essa ponte, o sistema não tem fundamento para checar. "
+                "A tese pode ser registrada como qualitativa; a checagem por número fica para "
+                "quando a ingestão da SEC existir."
+            ),
+        )
+
+
 class RendaFixa(ClasseDeAtivo):
     classe = Classe.RENDA_FIXA
 

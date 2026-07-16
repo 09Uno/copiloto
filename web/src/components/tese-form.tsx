@@ -8,15 +8,44 @@ import { api, ApiError, type Veredito } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
+import { Glossario, ExplicaTermo } from "@/components/glossario";
 
 /**
  * O formulário que RECUSA "vai subir".
  *
- * Cada pilar tem de ser verificável (`payout<80%`), qualitativo (você julga) ou uma aposta
- * com prazo (`divida_ebit<5@2028-06`). A validação de verdade é da API — aqui a gente só
- * mostra a mensagem que ela devolve, que é o que ensina o usuário.
+ * Antes era só um campo de texto cru (`payout<80%`) — potente, mas críptico. Agora o caminho
+ * padrão é guiado: escolha a métrica, o operador e o valor, e o sistema monta o pilar para
+ * você, mostrando ao vivo o que vai gravar. O modo avançado (texto cru, apostas com prazo em
+ * uma linha) continua ali para quem já sabe. A validação de verdade é da API — aqui a gente só
+ * mostra a mensagem que ela devolve, que é o que ensina.
  */
+
+type Guiado = {
+  metrica: string;
+  op: string;
+  valor: string;
+  unidade: "%" | "×";
+  aposta: boolean;
+  prazo: string; // AAAA-MM
+};
+
+const guiadoVazio = (metrica = ""): Guiado => ({
+  metrica,
+  op: "<",
+  valor: "",
+  unidade: "%",
+  aposta: false,
+  prazo: "",
+});
+
+/** Monta o texto que a API espera a partir das partes escolhidas. `null` se incompleto. */
+function textoDoGuiado(g: Guiado): string | null {
+  if (!g.metrica || !g.valor.trim()) return null;
+  let s = `${g.metrica}${g.op}${g.valor.trim()}${g.unidade === "%" ? "%" : ""}`;
+  if (g.aposta && g.prazo) s += `@${g.prazo}`;
+  return s;
+}
+
 export function TeseForm({
   ticker,
   metricasVerificaveis,
@@ -25,28 +54,32 @@ export function TeseForm({
   metricasVerificaveis: Record<string, string>;
 }) {
   const router = useRouter();
+  const metricas = Object.entries(metricasVerificaveis);
+
   const [resumo, setResumo] = useState("");
-  const [pilares, setPilares] = useState<string[]>([""]);
+  const [guiados, setGuiados] = useState<Guiado[]>([guiadoVazio(metricas[0]?.[0] ?? "")]);
   const [quali, setQuali] = useState<string[]>([]);
+  const [avancado, setAvancado] = useState(false);
+  const [crus, setCrus] = useState<string[]>([""]);
   const [enviando, setEnviando] = useState(false);
   const [quebrado, setQuebrado] = useState<string | null>(null);
 
-  const metricas = Object.entries(metricasVerificaveis);
-
-  function setPilar(i: number, v: string) {
-    const novo = [...pilares];
-    novo[i] = v;
-    setPilares(novo);
+  function setGuiado(i: number, patch: Partial<Guiado>) {
+    setGuiados((gs) => gs.map((g, idx) => (idx === i ? { ...g, ...patch } : g)));
   }
 
   async function criar(aceitarQuebrado?: string) {
     setEnviando(true);
     try {
+      const textos = [
+        ...guiados.map(textoDoGuiado).filter((t): t is string => !!t),
+        ...(avancado ? crus.filter((c) => c.trim()) : []),
+      ];
       const corpo = {
         ticker,
         resumo,
         pilares: [
-          ...pilares.filter((p) => p.trim()).map((texto) => ({ texto })),
+          ...textos.map((texto) => ({ texto })),
           ...quali.filter((q) => q.trim()).map((qualitativo) => ({ qualitativo })),
         ],
         ...(aceitarQuebrado ? { aceitar_quebrado: aceitarQuebrado } : {}),
@@ -56,7 +89,6 @@ export function TeseForm({
       router.push("/");
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
-        // Tese que já nasce quebrada — oferece declarar como decisão consciente.
         setQuebrado(err.message);
       } else {
         toast.error(err instanceof ApiError ? err.message : "erro");
@@ -85,47 +117,129 @@ export function TeseForm({
         />
       </div>
 
-      <div className="space-y-2">
-        <Label>Pilares verificáveis</Label>
-        <p className="text-xs text-muted-foreground">
-          Cada pilar é um número que dá para conferir. Ex.: <code>payout&lt;80%</code>,{" "}
-          <code>roe&gt;15%</code>. Aposta em recuperação leva prazo:{" "}
-          <code>divida_ebit&lt;5@2028-06</code>.
-        </p>
-        {pilares.map((p, i) => (
-          <div key={i} className="flex gap-2">
-            <Input
-              value={p}
-              onChange={(e) => setPilar(i, e.target.value)}
-              placeholder="payout<80%"
-              className="font-mono"
-            />
-            {i === pilares.length - 1 && (
-              <Button type="button" variant="outline" onClick={() => setPilares([...pilares, ""])}>
-                +
-              </Button>
-            )}
-          </div>
-        ))}
-
-        <div className="flex flex-wrap gap-1.5 pt-1">
-          <span className="text-xs text-muted-foreground mr-1">disponíveis:</span>
-          {metricas.map(([nome, rotulo]) => (
-            <Badge
-              key={nome}
-              variant="secondary"
-              className="cursor-pointer font-mono text-xs"
-              title={rotulo}
-              onClick={() => {
-                const vazio = pilares.findIndex((x) => !x.trim());
-                if (vazio >= 0) setPilar(vazio, `${nome}<`);
-                else setPilares([...pilares, `${nome}<`]);
-              }}
-            >
-              {nome}
-            </Badge>
-          ))}
+      <div className="space-y-3">
+        <div>
+          <Label>Pilares verificáveis</Label>
+          <p className="text-xs text-muted-foreground">
+            Cada pilar é um número que dá para conferir. Monte abaixo — o sistema avisa quando
+            deixar de valer.
+          </p>
         </div>
+
+        {guiados.map((g, i) => {
+          const preview = textoDoGuiado(g);
+          return (
+            <div key={i} className="rounded-lg border p-3 space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={g.metrica}
+                  onChange={(e) => setGuiado(i, { metrica: e.target.value })}
+                  className="h-9 rounded-md border bg-transparent px-2 text-sm font-mono min-w-32"
+                >
+                  {metricas.length === 0 && <option value="">—</option>}
+                  {metricas.map(([nome, rotulo]) => (
+                    <option key={nome} value={nome} title={rotulo}>
+                      {nome}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  value={g.op}
+                  onChange={(e) => setGuiado(i, { op: e.target.value })}
+                  className="h-9 rounded-md border bg-transparent px-2 text-sm font-mono"
+                  aria-label="operador"
+                >
+                  <option value="<">{"< menor que"}</option>
+                  <option value="<=">{"≤ até"}</option>
+                  <option value=">">{"> maior que"}</option>
+                  <option value=">=">{"≥ pelo menos"}</option>
+                </select>
+
+                <Input
+                  value={g.valor}
+                  onChange={(e) => setGuiado(i, { valor: e.target.value })}
+                  placeholder="80"
+                  inputMode="decimal"
+                  className="w-24 font-mono"
+                />
+
+                <div className="inline-flex rounded-md border overflow-hidden">
+                  {(["%", "×"] as const).map((u) => (
+                    <button
+                      key={u}
+                      type="button"
+                      onClick={() => setGuiado(i, { unidade: u })}
+                      className={`px-2.5 h-9 text-sm ${
+                        g.unidade === u
+                          ? "bg-secondary text-secondary-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                      title={u === "%" ? "percentual (payout, roe…)" : "múltiplo / número (p_vp, dívida/ebit…)"}
+                    >
+                      {u}
+                    </button>
+                  ))}
+                </div>
+
+                {guiados.length > 1 && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    className="text-muted-foreground"
+                    onClick={() => setGuiados((gs) => gs.filter((_, idx) => idx !== i))}
+                    title="remover pilar"
+                  >
+                    ✕
+                  </Button>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={g.aposta}
+                    onChange={(e) => setGuiado(i, { aposta: e.target.checked })}
+                    className="size-3.5 accent-[var(--aposta)]"
+                  />
+                  é uma aposta com prazo
+                </label>
+                {g.aposta && (
+                  <input
+                    type="month"
+                    value={g.prazo}
+                    onChange={(e) => setGuiado(i, { prazo: e.target.value })}
+                    className="h-8 rounded-md border bg-transparent px-2 text-xs font-mono"
+                    title="até quando você dá para essa aposta se provar"
+                  />
+                )}
+                {preview && (
+                  <span className="ml-auto text-xs text-muted-foreground">
+                    vira <code className="font-mono text-foreground">{preview}</code>
+                  </span>
+                )}
+              </div>
+
+              {/* o que é a métrica que ele acabou de escolher, e por que importa */}
+              {g.metrica && <ExplicaTermo chave={g.metrica} />}
+            </div>
+          );
+        })}
+
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => setGuiados((gs) => [...gs, guiadoVazio(metricas[0]?.[0] ?? "")])}
+        >
+          + pilar
+        </Button>
+
+        {metricas.length > 0 && (
+          <Glossario termos={metricas.map(([n]) => n)} titulo="O que cada métrica quer dizer" />
+        )}
       </div>
 
       <div className="space-y-2">
@@ -146,6 +260,43 @@ export function TeseForm({
             placeholder="monopólio regulado com receita contratada"
           />
         ))}
+      </div>
+
+      {/* Modo avançado: texto cru, para quem já domina a sintaxe. */}
+      <div className="space-y-2">
+        <button
+          type="button"
+          onClick={() => setAvancado((v) => !v)}
+          className="text-xs text-muted-foreground hover:text-foreground"
+        >
+          {avancado ? "▾" : "▸"} modo avançado (texto cru)
+        </button>
+        {avancado && (
+          <div className="space-y-2 rounded-lg border border-dashed p-3">
+            <p className="text-xs text-muted-foreground">
+              Uma linha por pilar. Ex.: <code>payout&lt;80%</code>,{" "}
+              <code>divida_ebit&lt;5@2028-06</code>. Disponíveis:{" "}
+              <span className="font-mono">{metricas.map(([n]) => n).join(", ") || "—"}</span>.
+            </p>
+            {crus.map((c, i) => (
+              <div key={i} className="flex gap-2">
+                <Input
+                  value={c}
+                  onChange={(e) =>
+                    setCrus((cs) => cs.map((x, idx) => (idx === i ? e.target.value : x)))
+                  }
+                  placeholder="divida_ebit<5@2028-06"
+                  className="font-mono"
+                />
+                {i === crus.length - 1 && (
+                  <Button type="button" variant="outline" onClick={() => setCrus([...crus, ""])}>
+                    +
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {quebrado && (

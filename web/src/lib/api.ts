@@ -66,12 +66,21 @@ export type Teto = {
   abaixo: boolean;
   margem_pct: number | null;
 };
+export type EstadoZona = "COMPRA" | "JUSTO" | "CARO";
+export type Compra = {
+  preco_compra: number;
+  teto: number;
+  margem_seguranca: number;
+  estado: EstadoZona;
+  falta_cair_pct: number | null; // >0 falta cair; <=0 já na zona
+};
 export type Avaliacao = {
   ticker: string;
   classe: string;
   preco: number | null;
   metricas: Metrica[];
   teto: Teto | null;
+  compra: Compra | null;
   alertas: string[];
   sem_criterio: string | null;
   metricas_verificaveis: Record<string, string>;
@@ -84,11 +93,26 @@ export type Posicao = {
   investido: number;
   fonte: string;
 };
+export type Achado = {
+  resumo: string; // por que esta notícia toca o pilar (frase do LLM)
+  url: string;
+  fonte: string;
+  data: string | null;
+  relevancia: "a favor" | "contra" | "contexto" | string;
+};
+export type Contexto = {
+  buscado_em: string;
+  nada_mudou: boolean;
+  achados: Achado[];
+};
 export type Resultado = {
   pilar: string;
+  pilar_id: number | null;
+  qualitativo: boolean;
   estado: "OK" | "CAIU" | "APOSTANDO" | "PERDEU" | "?" | "PERGUNTAR";
   valor: number | null;
   motivo: string | null;
+  contexto: Contexto | null;
 };
 export type Veredito = {
   tese_id: number;
@@ -98,6 +122,9 @@ export type Veredito = {
   de_pe: number;
   total_verificaveis: number;
   pergunta: string;
+  preco: number | null;
+  tenho: boolean; // na carteira? senão é watchlist ("de olho")
+  compra: Compra | null;
 };
 export type Aporte = {
   veredito: string;
@@ -108,3 +135,24 @@ export type Aporte = {
   yield_atual: number | null;
   motivos: string[];
 };
+export type Preferencias = {
+  meta_yield_acao: number;
+  meta_yield_fii: number;
+  margem_seguranca: number;
+  email_alertas: boolean;
+};
+
+// ---- feed de mercado ----
+export type FeedFonte = { url: string; fonte: string; data: string | null };
+export type FeedItem = {
+  tipo: "ativo" | "descoberta" | "macro" | string;
+  assunto: string; // ticker ("VBBR3") ou chave macro
+  rotulo: string; // "Vibra (VBBR3)" | "Juros / Selic"
+  titulo: string;
+  resumo: string; // o que a imprensa diz (factual)
+  mercado: string; // o que pode significar pro mercado (contexto, não recomendação)
+  fontes: FeedFonte[];
+  data: string | null;
+  na_carteira: boolean | null; // só para tipo "ativo"
+};
+export type Feed = { gerado_em: string | null; itens: FeedItem[] };

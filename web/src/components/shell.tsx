@@ -9,8 +9,10 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
 const NAV = [
-  { href: "/", rotulo: "Teses" },
+  { href: "/", rotulo: "Hoje" },
   { href: "/carteira", rotulo: "Carteira" },
+  { href: "/mercado", rotulo: "Mercado" },
+  { href: "/preferencias", rotulo: "Preferências" },
 ];
 
 /** Casca das telas autenticadas: guarda de acesso + navegação. */
@@ -32,7 +34,9 @@ export function Shell({ children }: { children: React.ReactNode }) {
     <div className="flex-1 flex flex-col">
       <header className="border-b">
         <div className="mx-auto max-w-5xl px-4 h-14 flex items-center gap-6">
-          <span className="font-semibold">Copiloto</span>
+          <Link href="/" className="font-semibold">
+            Copiloto
+          </Link>
           <nav className="flex gap-1">
             {NAV.map((n) => (
               <Link

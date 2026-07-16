@@ -101,8 +101,35 @@ CREATE TABLE IF NOT EXISTS preferencias (
     user_id           UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     meta_yield_acao   NUMERIC(5, 4) NOT NULL DEFAULT 0.06,
     meta_yield_fii    NUMERIC(5, 4) NOT NULL DEFAULT 0.10,
+    -- Margem de segurança: o desconto abaixo do teto que faz o preço virar "zona de compra".
+    -- O teto diz "acima daqui não serve à sua meta"; a margem diz "abaixo daqui há folga para
+    -- o erro". Comprar no teto é comprar sem colchão — 15% é um ponto de partida conservador,
+    -- ajustável por usuário. O critério continua sendo dele.
+    margem_seguranca  NUMERIC(5, 4) NOT NULL DEFAULT 0.15,
     email_alertas     BOOLEAN       NOT NULL DEFAULT TRUE,
     criado_em         TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+-- Bancos já criados antes desta coluna existir: idempotente.
+ALTER TABLE preferencias
+    ADD COLUMN IF NOT EXISTS margem_seguranca NUMERIC(5, 4) NOT NULL DEFAULT 0.15;
+
+-- ============================================================================
+-- CONTEXTO DO PILAR — o que a imprensa diz sobre um pilar QUALITATIVO
+-- ============================================================================
+--
+-- O sistema NÃO julga "monopólio regulado ainda vale?" — ele PERGUNTA. O contexto não muda
+-- isso: um buscador (notícia real + LLM que só FILTRA relevância, nunca dá veredito) traz as
+-- matérias que tocam aquela afirmação, citadas, para VOCÊ julgar. Guardamos a última busca por
+-- pilar (upsert) — `buscado_em` vira o "desde quando" da próxima, para mostrar só o que mudou.
+--
+-- Sem veredito no banco, de propósito: guardar "GPT disse que caiu" recriaria o score de
+-- confiança que o projeto inteiro existe para NÃO ter.
+
+CREATE TABLE IF NOT EXISTS contexto_pilar (
+    pilar_id    BIGINT PRIMARY KEY REFERENCES tese_pilares(id) ON DELETE CASCADE,
+    buscado_em  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    nada_mudou  BOOLEAN     NOT NULL DEFAULT FALSE,
+    achados     JSONB       NOT NULL DEFAULT '[]'  -- [{resumo, url, fonte, data, relevancia}]
 );
 
 -- ---------------------------------------------------------------- isolamento

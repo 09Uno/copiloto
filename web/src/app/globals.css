@@ -30,6 +30,10 @@
   --ok: oklch(0.72 0.19 149);
   --caiu: oklch(0.70 0.19 22);
   --aposta: oklch(0.80 0.16 85);
+
+  /* Azul de DADO — para magnitude (alocação, barras), fora do vocabulário de status.
+     Não é verde/vermelho/âmbar de propósito: quantidade nunca deve parecer recomendação. */
+  --dado: oklch(0.65 0.14 240);
 }
 
 @theme inline {
@@ -58,6 +62,7 @@
   --color-ok: var(--ok);
   --color-caiu: var(--caiu);
   --color-aposta: var(--aposta);
+  --color-dado: var(--dado);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }

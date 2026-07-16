@@ -20,9 +20,69 @@ Nada aqui prevê preço. Tudo vem do seu objetivo e da aritmética.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 
 from app.ativos import base
 from app.ativos.base import Avaliacao
+
+
+class Zona(StrEnum):
+    """Onde o preço de hoje cai em relação ao SEU teto e à SUA margem de segurança.
+
+    Não é 'compre/venda'. É onde o preço está em relação ao critério que você mesmo definiu:
+    a meta de yield (que gera o teto) e a margem (a folga que você exige abaixo dele).
+    """
+
+    COMPRA = "COMPRA"   # preço ≤ preço de compra: dentro da sua zona, com margem
+    JUSTO = "JUSTO"     # abaixo do teto, mas sem a margem — serve, sem colchão
+    CARO = "CARO"       # acima do teto: a este preço não entrega sua meta
+
+
+@dataclass(frozen=True)
+class ZonaCompra:
+    """O preço em que vale a pena comprar, com margem — e onde o preço de hoje está frente a ele.
+
+    `preco_compra = teto × (1 − margem)`. O teto responde "a partir de que preço deixa de servir
+    à minha meta?"; a margem responde "quanta folga eu quero abaixo disso, para o caso de eu ter
+    errado a conta?". Juntos viram um alvo de entrada — sem prever nada.
+    """
+
+    teto: float
+    preco_compra: float
+    margem_seguranca: float
+    estado: Zona
+    preco: float | None
+    # >0: quanto o preço ainda precisa CAIR (fração) para entrar na zona. ≤0: já está nela.
+    falta_cair_pct: float | None
+
+    @property
+    def na_zona(self) -> bool:
+        return self.estado is Zona.COMPRA
+
+
+def zona_de_compra(av: Avaliacao, margem: float) -> ZonaCompra | None:
+    """A zona de compra para esta avaliação, dada a margem de segurança do usuário.
+
+    Depende só do teto (que já vem da meta do usuário) e da margem — não toca no cache do
+    avaliador, que é indexado por (ticker, meta). Composição limpa: teto puro + margem por cima.
+    """
+    if av.teto is None:
+        return None
+    margem = max(0.0, min(margem, 0.9))  # margem sã: nunca negativa, nunca zera o preço
+    preco_compra = av.teto.valor * (1 - margem)
+
+    if av.preco is None or av.preco <= 0:
+        return ZonaCompra(av.teto.valor, preco_compra, margem, Zona.JUSTO, None, None)
+
+    if av.preco > av.teto.valor:
+        estado = Zona.CARO
+    elif av.preco > preco_compra:
+        estado = Zona.JUSTO
+    else:
+        estado = Zona.COMPRA
+
+    falta = (av.preco - preco_compra) / av.preco
+    return ZonaCompra(av.teto.valor, preco_compra, margem, estado, av.preco, falta)
 
 
 @dataclass(frozen=True)

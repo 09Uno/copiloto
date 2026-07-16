@@ -1,0 +1,20 @@
+# O que NUNCA entra na imagem.
+# .env em primeiro lugar: segredo não se assa na imagem — vai por env_file/environment no compose.
+**/.env
+**/.env.local
+
+# Pesados e recriáveis
+backend/.venv
+**/__pycache__
+**/*.pyc
+web/node_modules
+web/.next
+data/                 # os 147 MB da CVM vão num VOLUME, não na imagem
+
+# Ruído
+.git
+.history
+*.egg-info
+**/.pytest_cache
+**/.ruff_cache
+scratchpad

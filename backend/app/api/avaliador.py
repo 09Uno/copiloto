@@ -19,7 +19,7 @@ from app.ativos import base as ab
 from app.ativos.acao import Acao
 from app.ativos.base import Avaliacao
 from app.ativos.fii import FII
-from app.ativos.sem_criterio import ETF, Cripto, RendaFixa
+from app.ativos.sem_criterio import BDR, ETF, Cripto, RendaFixa
 
 _lock = threading.Lock()
 _pronto = False
@@ -41,7 +41,7 @@ def _garantir_registro() -> None:
         ano = datetime.now(UTC).year
         ab.registrar(Acao(cvm.load(list(range(ano - 5, ano + 1))), cvm.mapa_tickers()))
         ab.registrar(FII(cvm_fii.load([ano - 1, ano])))
-        for c in (Cripto(), ETF(), RendaFixa()):
+        for c in (Cripto(), ETF(), BDR(), RendaFixa()):
             ab.registrar(c)
         _pronto = True
 

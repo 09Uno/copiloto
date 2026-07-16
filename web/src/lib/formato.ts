@@ -30,3 +30,37 @@ export function iconeEstado(estado: string): string {
     >
   )[estado] ?? "•";
 }
+
+// --- Zona de compra. NÃO é "compre/venda" — é onde o preço está frente ao SEU critério
+// (sua meta de yield gera o teto; sua margem gera o preço de compra). Verde = na sua zona,
+// âmbar = serve mas sem margem, cinza = caro para a sua meta.
+export function corZona(estado: string): string {
+  switch (estado) {
+    case "COMPRA":
+      return "text-[var(--ok)]";
+    case "JUSTO":
+      return "text-[var(--aposta)]";
+    default: // CARO
+      return "text-muted-foreground";
+  }
+}
+
+export function rotuloZona(estado: string): string {
+  return (
+    { COMPRA: "na sua zona de compra", JUSTO: "abaixo do teto, sem margem", CARO: "acima do teto" } as Record<
+      string,
+      string
+    >
+  )[estado] ?? estado;
+}
+
+export function bordaZona(estado: string): string {
+  switch (estado) {
+    case "COMPRA":
+      return "border-[var(--ok)]/40";
+    case "JUSTO":
+      return "border-[var(--aposta)]/40";
+    default:
+      return "border-[var(--caiu)]/30";
+  }
+}

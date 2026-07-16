@@ -17,7 +17,10 @@ from pydantic import BaseModel
 from app.api import avaliador, repo
 from app.api.deps import usuario_atual
 from app.api.pool import pool
+from app.api.rotas.ativo import CompraOut
 from app.ativos import base as ab
+from app.ativos.base import Avaliacao
+from app.ativos.decisao import zona_de_compra
 from app.tese import motor as tm
 
 router = APIRouter(prefix="/api/teses", tags=["teses"])
@@ -37,9 +40,12 @@ class TeseIn(BaseModel):
 
 class ResultadoOut(BaseModel):
     pilar: str
+    pilar_id: int | None = None        # id do pilar — o front usa para buscar contexto
+    qualitativo: bool = False          # só nos qualitativos aparece o "buscar o que mudou"
     estado: str
     valor: float | None
     motivo: str | None
+    contexto: dict | None = None       # última busca de notícia daquele pilar, se houve
 
 
 class VeredictoOut(BaseModel):
@@ -50,17 +56,36 @@ class VeredictoOut(BaseModel):
     de_pe: int
     total_verificaveis: int
     pergunta: str
+    # contexto de preço: o mesmo veredito serve para o que você TEM e para o que vigia (watchlist)
+    preco: float | None = None
+    tenho: bool = False                 # está na carteira? senão, é uma tese "de olho"
+    compra: CompraOut | None = None     # preço de compra com margem + zona
 
 
-def _out(tese_id: int, v: tm.Veredito) -> VeredictoOut:
+def _out(
+    tese_id: int,
+    v: tm.Veredito,
+    av: Avaliacao | None = None,
+    tenho: bool = False,
+    margem: float = 0.15,
+    contextos: dict[int, dict] | None = None,
+) -> VeredictoOut:
+    z = zona_de_compra(av, margem) if av else None
+    ctx = contextos or {}
     return VeredictoOut(
         tese_id=tese_id, ticker=v.ticker, resumo=v.resumo,
         resultados=[
-            ResultadoOut(pilar=str(r.pilar), estado=r.estado.value, valor=r.valor,
-                         motivo=r.motivo)
+            ResultadoOut(
+                pilar=str(r.pilar), pilar_id=r.pilar.id, qualitativo=r.pilar.qualitativo,
+                estado=r.estado.value, valor=r.valor, motivo=r.motivo,
+                contexto=ctx.get(r.pilar.id) if r.pilar.qualitativo else None,
+            )
             for r in v.resultados
         ],
         de_pe=v.de_pe, total_verificaveis=v.total_verificaveis, pergunta=v.pergunta,
+        preco=av.preco if av else None,
+        tenho=tenho,
+        compra=CompraOut.de(z) if z else None,
     )
 
 
@@ -69,6 +94,7 @@ async def criar(dados: TeseIn, user_id: uuid.UUID = Depends(usuario_atual)) -> V
     tk = dados.ticker.upper().strip()
     classe = ab.classificar(tk)
     meta = await repo.meta_yield(user_id, classe.value)
+    margem = await repo.margem_seguranca(user_id)
     av = avaliador.avaliar(tk, meta)
 
     impl = ab.para(classe)
@@ -128,12 +154,20 @@ async def criar(dados: TeseIn, user_id: uuid.UUID = Depends(usuario_atual)) -> V
                 p.qualitativo, p.descricao, p.prazo,
             )
 
-    return _out(tese_id, tm.verificar(av, resumo, pilares))
+    tenho = tk in await repo.tickers_carteira(user_id)
+    return _out(tese_id, tm.verificar(av, resumo, pilares), av, tenho, margem)
 
 
 @router.get("", response_model=list[VeredictoOut])
 async def checar_todas(user_id: uuid.UUID = Depends(usuario_atual)) -> list[VeredictoOut]:
-    """Checa todas as teses ativas do usuário contra os fundamentos de hoje."""
+    """Checa todas as teses ativas do usuário contra os fundamentos de hoje.
+
+    O mesmo veredito serve dois papéis: para o que você TEM, vigia os motivos; para o que você
+    só acompanha (watchlist), diz se o preço entrou na sua zona de compra.
+    """
+    margem = await repo.margem_seguranca(user_id)
+    carteira = await repo.tickers_carteira(user_id)
+    contextos = await repo.contextos_do_usuario(user_id)
     async with pool().acquire() as c:
         teses = await c.fetch(
             """
@@ -165,7 +199,11 @@ async def checar_todas(user_id: uuid.UUID = Depends(usuario_atual)) -> list[Vere
             ]
             meta = float(t["meta_yield"]) if t["meta_yield"] else 0.06
             av = avaliador.avaliar(t["ticker"], meta)
-            saida.append(_out(t["id"], tm.verificar(av, t["resumo"], pilares)))
+            tenho = t["ticker"] in carteira
+            saida.append(
+                _out(t["id"], tm.verificar(av, t["resumo"], pilares), av, tenho, margem,
+                     contextos)
+            )
     return saida
 
 

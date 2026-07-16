@@ -14,7 +14,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import pool
-from app.api.rotas import ativo, autenticacao, carteira, tese
+from app.api.rotas import (
+    ativo,
+    autenticacao,
+    carteira,
+    contexto,
+    feed,
+    preferencias,
+    resumo,
+    tese,
+)
 
 
 @asynccontextmanager
@@ -49,6 +58,10 @@ app.include_router(autenticacao.router)
 app.include_router(carteira.router)
 app.include_router(ativo.router)
 app.include_router(tese.router)
+app.include_router(preferencias.router)
+app.include_router(contexto.router)
+app.include_router(feed.router)
+app.include_router(resumo.router)
 
 
 @app.get("/api/saude")

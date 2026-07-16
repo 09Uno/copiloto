@@ -4,9 +4,12 @@ import { use, useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { api, type Avaliacao, ApiError } from "@/lib/api";
-import { brl, pct } from "@/lib/formato";
+import { brl, pct, corZona, rotuloZona, bordaZona } from "@/lib/formato";
 import { Shell } from "@/components/shell";
 import { TeseForm } from "@/components/tese-form";
+import { AporteSimulador } from "@/components/aporte-simulador";
+import { Glossario } from "@/components/glossario";
+import { ReguaCompra } from "@/components/visuais";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default function AtivoPage({ params }: { params: Promise<{ ticker: string }> }) {
@@ -48,26 +51,40 @@ export default function AtivoPage({ params }: { params: Promise<{ ticker: string
             </Card>
           ) : (
             <>
-              {av.teto && (
-                <Card className={av.teto.abaixo ? "border-[var(--ok)]/40" : "border-[var(--caiu)]/40"}>
+              {av.compra && (
+                <Card className={bordaZona(av.compra.estado)}>
                   <CardHeader className="pb-2">
-                    <CardTitle className="text-base">Preço teto</CardTitle>
+                    <CardTitle className="text-base">Preço de compra</CardTitle>
                   </CardHeader>
-                  <CardContent className="space-y-1">
+                  <CardContent className="space-y-3">
                     <div className="flex items-baseline gap-2">
-                      <span className="text-2xl font-semibold">{brl(av.teto.valor)}</span>
-                      <span
-                        className={`text-sm ${av.teto.abaixo ? "text-[var(--ok)]" : "text-[var(--caiu)]"}`}
-                      >
-                        {av.teto.abaixo ? "abaixo do teto" : "acima do teto"}
-                        {av.teto.margem_pct != null &&
-                          ` (${av.teto.margem_pct > 0 ? "+" : ""}${av.teto.margem_pct.toFixed(1)}%)`}
+                      <span className="text-3xl font-semibold">{brl(av.compra.preco_compra)}</span>
+                      <span className={`text-sm ${corZona(av.compra.estado)}`}>
+                        {av.preco != null && rotuloZona(av.compra.estado)}
                       </span>
                     </div>
-                    <p className="text-xs text-muted-foreground">{av.teto.criterio}</p>
-                    <p className="text-xs text-muted-foreground pt-1">
-                      É o preço em que o dividendo entrega a sua meta de yield. Não é previsão —
-                      o critério é seu.
+
+                    {/* A régua torna o critério visível: as faixas são você (teto e margem),
+                        o marcador é o mercado (preço de hoje). */}
+                    <div className="border-t pt-2">
+                      <ReguaCompra
+                        teto={av.compra.teto}
+                        precoCompra={av.compra.preco_compra}
+                        preco={av.preco}
+                      />
+                    </div>
+
+                    {av.compra.falta_cair_pct != null && av.compra.falta_cair_pct > 0.001 && (
+                      <p className="text-sm text-[var(--aposta)]">
+                        falta cair {pct(av.compra.falta_cair_pct, 1)} para entrar na sua zona de
+                        compra
+                      </p>
+                    )}
+
+                    <p className="text-xs text-muted-foreground">
+                      {av.teto?.criterio}. O preço de compra é o teto com a sua margem de
+                      segurança de {pct(av.compra.margem_seguranca, 0)}. Não é previsão — o
+                      critério é seu.
                     </p>
                   </CardContent>
                 </Card>
@@ -88,6 +105,17 @@ export default function AtivoPage({ params }: { params: Promise<{ ticker: string
                   </dl>
                 </CardContent>
               </Card>
+
+              {/* A legenda: o que cada número quer dizer e por que importa. Recolhida por
+                  padrão, para quem já sabe não tropeçar nela. */}
+              <Glossario
+                termos={[
+                  ...av.metricas.map((m) => m.nome),
+                  ...Object.keys(av.metricas_verificaveis),
+                ]}
+              />
+
+              {av.preco != null && <AporteSimulador ticker={tk} preco={av.preco} />}
 
               {av.alertas.length > 0 && (
                 <Card>

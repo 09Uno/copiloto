@@ -1,0 +1,47 @@
+# Copiloto — stack de produção. Espelha o padrão da sua VPS:
+#   ~/docker/sistemas/copiloto/
+#     ├── repo/                ← git clone deste repositório
+#     ├── docker-compose.yml   ← este arquivo
+#     └── .env                 ← copie de repo/deploy/.env.example e preencha
+#
+# O Postgres é o COMPARTILHADO (container `postgres` no proxy-net) — igual ao n8n, o copiloto tem
+# só o SEU banco e usuário lá. Não subimos Postgres novo.
+#
+# n8n e copiloto-api estão os dois no proxy-net, então o n8n chama a API pelo NOME INTERNO
+# (http://copiloto-api:8000) — o resumo diário não precisa de domínio público nem do NPM.
+
+services:
+  copiloto-api:
+    build:
+      context: ./repo
+      dockerfile: backend/Dockerfile
+    container_name: copiloto-api
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - TZ=America/Bahia          # a data do resumo (📊 16/07) sai no fuso certo
+    volumes:
+      - ./cvm_data:/app/data      # os ~147 MB da CVM, baixados 1x e persistidos
+    networks:
+      - proxy-net
+
+  # ── PASSO 2 (painel web público). Descomente quando for expor a UI. Precisa de:
+  #    (a) o web/Dockerfile (já no repo), (b) um Proxy Host no NPM apontando para
+  #        copiloto-web:3000, e (c) CORS_ORIGENS no .env liberando o domínio do painel.
+  # copiloto-web:
+  #   build:
+  #     context: ./repo
+  #     dockerfile: web/Dockerfile
+  #     args:
+  #       # URL PÚBLICA da API (o navegador chama direto). Crie um Proxy Host no NPM:
+  #       # copiloto-api.codetoyou.tech → copiloto-api:8000
+  #       NEXT_PUBLIC_API_URL: https://copiloto-api.codetoyou.tech
+  #   container_name: copiloto-web
+  #   restart: always
+  #   networks:
+  #     - proxy-net
+
+networks:
+  proxy-net:
+    external: true

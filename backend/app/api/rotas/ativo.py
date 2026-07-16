@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from app.api import avaliador, repo
 from app.api.deps import usuario_atual
 from app.ativos import base as ab
-from app.ativos.decisao import Posicao, simular
+from app.ativos.decisao import Posicao, ZonaCompra, simular, zona_de_compra
 
 router = APIRouter(prefix="/api/ativo", tags=["ativo"])
 
@@ -34,12 +34,31 @@ class TetoOut(BaseModel):
     margem_pct: float | None
 
 
+class CompraOut(BaseModel):
+    """Preço de compra (teto com margem) e onde o preço de hoje está frente a ele."""
+
+    preco_compra: float
+    teto: float
+    margem_seguranca: float
+    estado: str               # "COMPRA" | "JUSTO" | "CARO"
+    falta_cair_pct: float | None
+
+    @classmethod
+    def de(cls, z: ZonaCompra) -> CompraOut:
+        return cls(
+            preco_compra=z.preco_compra, teto=z.teto,
+            margem_seguranca=z.margem_seguranca, estado=z.estado.value,
+            falta_cair_pct=z.falta_cair_pct,
+        )
+
+
 class AvaliacaoOut(BaseModel):
     ticker: str
     classe: str
     preco: float | None
     metricas: list[MetricaOut]
     teto: TetoOut | None
+    compra: CompraOut | None       # preço de compra com margem + zona
     alertas: list[str]
     sem_criterio: str | None
     # o que a tese pode verificar nesta classe
@@ -63,8 +82,10 @@ async def avaliar_ativo(
     tk = ticker.upper().strip()
     classe = ab.classificar(tk)
     meta = await repo.meta_yield(user_id, classe.value)
+    margem = await repo.margem_seguranca(user_id)
     av = avaliador.avaliar(tk, meta)
 
+    z = zona_de_compra(av, margem)
     impl = ab.para(classe)
     return AvaliacaoOut(
         ticker=av.ticker,
@@ -80,6 +101,7 @@ async def avaliar_ativo(
                     abaixo=bool(av.abaixo_do_teto), margem_pct=av.margem_pct)
             if av.teto else None
         ),
+        compra=CompraOut.de(z) if z else None,
         alertas=list(av.alertas),
         sem_criterio=av.sem_criterio,
         metricas_verificaveis=impl.metricas_disponiveis() if impl else {},
