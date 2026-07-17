@@ -26,21 +26,21 @@ services:
     networks:
       - proxy-net
 
-  # ── PASSO 2 (painel web público). Descomente quando for expor a UI. Precisa de:
-  #    (a) o web/Dockerfile (já no repo), (b) um Proxy Host no NPM apontando para
-  #        copiloto-web:3000, e (c) CORS_ORIGENS no .env liberando o domínio do painel.
-  # copiloto-web:
-  #   build:
-  #     context: ./repo
-  #     dockerfile: web/Dockerfile
-  #     args:
-  #       # URL PÚBLICA da API (o navegador chama direto). Crie um Proxy Host no NPM:
-  #       # copiloto-api.codetoyou.tech → copiloto-api:8000
-  #       NEXT_PUBLIC_API_URL: https://copiloto-api.codetoyou.tech
-  #   container_name: copiloto-web
-  #   restart: always
-  #   networks:
-  #     - proxy-net
+  # ── Painel web. O navegador chama a API DIRETO, então NEXT_PUBLIC_API_URL (assado no build)
+  #    é a URL PÚBLICA da API. No NPM crie dois Proxy Hosts:
+  #      copiloto.codetoyou.tech      → copiloto-web : 3000
+  #      copiloto-api.codetoyou.tech  → copiloto-api : 8000
+  #    e confirme CORS_ORIGENS=https://copiloto.codetoyou.tech no .env.
+  copiloto-web:
+    build:
+      context: ./repo
+      dockerfile: web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: https://copiloto-api.codetoyou.tech
+    container_name: copiloto-web
+    restart: always
+    networks:
+      - proxy-net
 
 networks:
   proxy-net:
