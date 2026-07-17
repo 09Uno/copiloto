@@ -135,3 +135,39 @@ def test_coletar_enfileira_e_proxima_drena_2_por_vez(cliente, monkeypatch):
     assert p3["enviados"] == 0 and p3["mensagens"] == []         # fila vazia
 
     _apagar(email)
+
+
+def test_boletim_uma_chamada_de_llm_e_dedup(cliente, monkeypatch):
+    """O boletim faz UMA chamada de LLM (não uma por assunto) e não repete: sem notícia nova, nem
+    chama a IA."""
+    from app.contexto import buscador
+    email = f"bol_{uuid.uuid4().hex[:10]}@exemplo.com"
+    assert cliente.post("/api/auth/cadastro",
+                        json={"email": email, "senha": "senha-de-teste-123"}).status_code == 201
+    H = {"X-Resumo-Token": "seg"}
+    monkeypatch.setattr(servico, "env",
+                        lambda n: {"RESUMO_TOKEN": "seg", "RESUMO_EMAIL": email}.get(n))
+
+    async def noticias(termo, desde):
+        return [{"titulo": "Taesa compra transmissoras", "url": "http://a",
+                 "fonte": "InfoMoney", "data": "2026-07-16"}]
+
+    chamou = {"n": 0}
+
+    async def chamar(sistema, usuario):
+        chamou["n"] += 1
+        return {"vazio": False, "texto": "Taesa avança em transmissão, ao custo de mais dívida."}
+
+    monkeypatch.setattr(feed, "disponivel", lambda: True)
+    monkeypatch.setattr(buscador, "_noticias", noticias)
+    monkeypatch.setattr(feed, "_chamar", chamar)
+
+    r1 = cliente.post("/api/feed/boletim", headers=H).json()
+    assert "Boletim" in r1["texto"] and "dívida" in r1["texto"]
+    assert chamou["n"] == 1, "um boletim = uma chamada de LLM"
+
+    r2 = cliente.post("/api/feed/boletim", headers=H).json()
+    assert r2["texto"] == ""                       # url já coberta → nada novo
+    assert chamou["n"] == 1, "sem notícia nova, não chama o LLM"
+
+    _apagar(email)

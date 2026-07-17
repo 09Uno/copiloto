@@ -134,6 +134,26 @@ _SISTEMA_DESCOBERTA = (
 )
 
 
+_SISTEMA_BOLETIM = (
+    "Você é um analista escrevendo um BOLETIM curto de mercado para um investidor pessoa física "
+    "na B3. Recebe uma lista NUMERADA de notícias reais recentes — sobre os ATIVOS dele, o "
+    "MERCADO e a MACRO (juros, inflação, câmbio, atividade).\n"
+    "Escreva UM texto corrido, coeso e CURTO (no máximo 4 a 6 frases), como um analista contando "
+    "o dia. Priorize o que mais importa e agrupe naturalmente (a macro primeiro, depois os ativos "
+    "dele). Para cada ponto relevante, pese os DOIS lados: o efeito positivo E o risco ou custo de "
+    "CURTO PRAZO (ex.: uma aquisição cresce a receita MAS aumenta a dívida; um corte de juros "
+    "alivia o crédito MAS pode sinalizar economia fraca). Não seja torcedor de um lado só — a "
+    "contrapartida é o que costuma faltar.\n"
+    "NUNCA recomende comprar, vender ou manter; NUNCA dê preço-alvo ou nota própria — "
+    "preço-alvo/recomendação é sempre de um ANALISTA citado na notícia. Use SOMENTE as notícias "
+    "fornecidas; não invente fato, número ou empresa. Se NENHUMA for relevante, "
+    '{"vazio": true}.\n'
+    'Responda só JSON: {"vazio": bool, "texto": "o boletim em texto corrido"}'
+)
+
+CAP_BOLETIM = 40  # teto de manchetes por boletim — segura o custo do único LLM
+
+
 def _lista(noticias: list[dict]) -> str:
     return "\n".join(
         f"{i}. [{n['data'] or 's/data'}] {n['titulo']} ({n['fonte'] or '?'})"
@@ -308,6 +328,60 @@ async def gerar(
 
 def para_dict(item: ItemFeed) -> dict:
     return asdict(item)
+
+
+# ------------------------------------------------------------------ boletim (digest)
+
+
+async def _novas_do_assunto(rotulo: str, termo: str, desde, enviadas: set[str]) -> list[tuple]:
+    ns = await buscador._noticias(termo, desde)
+    return [(rotulo, n) for n in ns if n["url"] not in enviadas]
+
+
+async def boletim(
+    assuntos: list[tuple[str, bool]], enviadas: set[str]
+) -> tuple[str, set[str]]:
+    """Um BOLETIM: coleta o que é novo (todos os assuntos + macro + giro) e faz UMA chamada de LLM
+    que escreve um texto corrido, priorizado e com os dois lados. Devolve (texto, urls_cobertas).
+
+    Barato de propósito: 1 chamada de IA por boletim (não uma por assunto). Se nada novo, não
+    chama o LLM e devolve ("", set()). As URLs cobertas são marcadas pela rota para não repetir."""
+    if not disponivel():
+        raise RuntimeError("Feed desligado: defina OPENAI_API_KEY em backend/.env para ligar.")
+
+    desde = datetime.now(UTC).date() - timedelta(days=DIAS_FEED)
+    sem = asyncio.Semaphore(CONCORRENCIA)
+
+    async def _lim(coro):
+        async with sem:
+            return await coro
+
+    tarefas = []
+    for ticker, _ in assuntos:
+        nome = buscador.termo_busca(ticker)
+        rotulo = f"{nome} ({ticker})" if nome.upper() != ticker.upper() else ticker
+        tarefas.append(_lim(_novas_do_assunto(rotulo, nome, desde, enviadas)))
+    for _chave, rotulo, termo in MACRO:
+        tarefas.append(_lim(_novas_do_assunto(rotulo, termo, desde, enviadas)))
+    tarefas.append(_lim(_novas_do_assunto("Mercado", QUERY_DESCOBERTA, desde, enviadas)))
+
+    resultados = await asyncio.gather(*tarefas, return_exceptions=True)
+    novas = [par for r in resultados if isinstance(r, list) for par in r]
+    if not novas:
+        return "", set()  # nada novo — nem gasta o LLM
+
+    urls = {n["url"] for _, n in novas}
+    novas.sort(key=lambda x: x[1]["data"] or "", reverse=True)
+    lista = "\n".join(
+        f"{i}. [{n['data'] or 's/data'}] ({rot}) {n['titulo']} ({n['fonte'] or '?'})"
+        for i, (rot, n) in enumerate(novas[:CAP_BOLETIM], 1)
+    )
+    dados = await _chamar(_SISTEMA_BOLETIM, f"NOTÍCIAS NOVAS:\n{lista}")
+    texto = "" if dados.get("vazio") else str(dados.get("texto", "")).strip()
+    if not texto:
+        return "", urls  # LLM não achou nada digno — marca como visto, não manda
+    cabecalho = f"📊 *Boletim — {datetime.now():%d/%m}*"
+    return f"{cabecalho}\n\n{texto}", urls
 
 
 # ------------------------------------------------------------------ novidades → WhatsApp

@@ -122,3 +122,22 @@ async def proxima(user=Depends(usuario_de_servico)) -> ProximaOut:
     return ProximaOut(
         mensagens=msgs, enviados=len(msgs), na_fila=await repo.tamanho_fila_feed(user.id)
     )
+
+
+class BoletimOut(BaseModel):
+    texto: str   # o boletim pronto; "" = nada novo relevante (o n8n não manda)
+
+
+@router.post("/boletim", response_model=BoletimOut)
+async def boletim(user=Depends(usuario_de_servico)) -> BoletimOut:
+    """BOLETIM (ex.: 3x/dia). UMA chamada de LLM que lê o que é novo e escreve um texto corrido,
+    priorizado e com os dois lados (efeito x risco de curto prazo). Marca as URLs cobertas para
+    não repetir. Token de serviço. É o caminho enxuto: poucas mensagens, pouco token."""
+    assuntos = await repo.tickers_acompanhados(user.id)
+    enviadas = await repo.urls_do_feed_enviadas(user.id)
+    try:
+        texto, urls = await feed.boletim(assuntos, enviadas)
+    except RuntimeError as e:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from None
+    await repo.marcar_urls_feed(user.id, urls)
+    return BoletimOut(texto=texto)
