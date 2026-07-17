@@ -159,13 +159,18 @@ def test_boletim_uma_chamada_de_llm_e_dedup(cliente, monkeypatch):
         return {"vazio": False, "texto": "Taesa avança em transmissão, ao custo de mais dívida.",
                 "materias": [{"rotulo": "Taesa — aquisição", "fonte": 1}]}
 
+    async def encurtar(url):
+        return "https://is.gd/xxx"
+
     monkeypatch.setattr(feed, "disponivel", lambda: True)
     monkeypatch.setattr(buscador, "_noticias", noticias)
     monkeypatch.setattr(feed, "_chamar", chamar)
+    monkeypatch.setattr(feed, "_encurtar", encurtar)
 
     r1 = cliente.post("/api/feed/boletim", headers=H).json()
     assert "Boletim" in r1["texto"] and "dívida" in r1["texto"]
-    assert "Leia mais" in r1["texto"] and "http://a" in r1["texto"]   # seção de links
+    assert "Leia mais" in r1["texto"] and "is.gd/xxx" in r1["texto"]   # link encurtado
+    assert "news.google" not in r1["texto"]                            # nada de URL gigante
     assert chamou["n"] == 1, "um boletim = uma chamada de LLM"
 
     r2 = cliente.post("/api/feed/boletim", headers=H).json()

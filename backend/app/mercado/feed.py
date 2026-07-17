@@ -343,6 +343,19 @@ async def _novas_do_assunto(rotulo: str, termo: str, desde, enviadas: set[str]) 
     return [(rotulo, n) for n in ns if n["url"] not in enviadas]
 
 
+async def _encurtar(url: str) -> str:
+    """Encurta a URL — a do Google Notícias é gigante e polui a mensagem. TinyURL, grátis e sem
+    chave. Se falhar, mantém a original (feia, mas o link continua funcionando)."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as cli:
+            r = await cli.get("https://tinyurl.com/api-create.php", params={"url": url})
+        if r.status_code == 200 and r.text.strip().startswith("http"):
+            return r.text.strip()
+    except Exception:  # noqa: BLE001
+        pass
+    return url
+
+
 async def boletim(
     assuntos: list[tuple[str, bool]], enviadas: set[str]
 ) -> tuple[str, set[str]]:
@@ -387,9 +400,9 @@ async def boletim(
     if not texto:
         return "", urls  # LLM não achou nada digno — marca como visto, não manda
 
-    # seção "Leia mais": rótulo do LLM + a URL real da notícia. Índice fora da lista (o LLM
-    # inventou) é descartado — a mesma trava anti-alucinação dos outros pontos.
-    links: list[str] = []
+    # seção "Leia mais": rótulo do LLM + a URL da notícia. Índice fora da lista (o LLM inventou)
+    # é descartado — a mesma trava anti-alucinação dos outros pontos.
+    mats: list[tuple[str, str]] = []
     vistos: set[str] = set()
     for m in (dados.get("materias") or [])[:MAX_LINKS]:
         try:
@@ -400,7 +413,11 @@ async def boletim(
             continue
         vistos.add(noticia["url"])
         rot = str(m.get("rotulo", "")).strip() or noticia["titulo"]
-        links.append(f"• *{rot}*\n{noticia['url']}")
+        mats.append((rot, noticia["url"]))
+
+    # encurta os links (concorrente) — o do Google Notícias é enorme; vira um is.gd curtinho
+    curtos = await asyncio.gather(*(_encurtar(u) for _, u in mats)) if mats else []
+    links = [f"*{rot}*: {curto}" for (rot, _), curto in zip(mats, curtos)]
 
     partes = [f"📊 *Boletim — {datetime.now():%d/%m}*", "", texto]
     if links:
