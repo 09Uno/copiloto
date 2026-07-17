@@ -292,3 +292,48 @@ async def gerar(assuntos: list[tuple[str, bool]]) -> list[ItemFeed]:
 
 def para_dict(item: ItemFeed) -> dict:
     return asdict(item)
+
+
+# ------------------------------------------------------------------ novidades → WhatsApp
+
+MAX_WPP = 8  # teto de itens na mensagem; o resto fica no painel (não vira um textão)
+_GRUPO = {
+    "ativo": "📈 *Seus ativos*",
+    "descoberta": "🔎 *Giro do mercado*",
+    "macro": "🌐 *Macro*",
+}
+
+
+def filtrar_novos(
+    itens: list[ItemFeed], enviadas: set[str]
+) -> tuple[list[ItemFeed], set[str]]:
+    """Só os itens com ao menos uma fonte INÉDITA. Devolve (novos, urls a marcar como enviadas).
+
+    Dedup pela URL: o resumo do LLM muda entre rodadas, a URL da notícia não. Um item que só cita
+    notícias já enviadas não é novidade — mesmo que o texto tenha saído diferente."""
+    novos = [i for i in itens if any(f.url not in enviadas for f in i.fontes)]
+    urls = {f.url for i in novos for f in i.fontes}
+    return novos, urls
+
+
+def formatar_whatsapp(novos: list[ItemFeed]) -> str:
+    """Monta a mensagem do WhatsApp com o que é novo. Vazio = nada novo (o n8n não manda)."""
+    if not novos:
+        return ""
+    mostrados = novos[:MAX_WPP]
+    L = [f"📰 *Mercado — novidades ({len(novos)})*"]
+    grupo = None
+    for i in mostrados:
+        if i.tipo != grupo:
+            grupo = i.tipo
+            L.append("")
+            L.append(_GRUPO.get(i.tipo, "*Outros*"))
+        L.append(f"• *{i.rotulo}* — {i.titulo}")
+        if i.resumo:
+            L.append(f"  {i.resumo}")
+        if i.mercado:
+            L.append(f"  ↳ _{i.mercado}_")
+    resto = len(novos) - len(mostrados)
+    if resto > 0:
+        L += ["", f"_+{resto} no painel de Mercado._"]
+    return "\n".join(L)

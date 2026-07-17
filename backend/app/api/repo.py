@@ -323,6 +323,25 @@ async def salvar_contexto(pilar_id: int, nada_mudou: bool, achados: list[dict]) 
         )
 
 
+async def urls_do_feed_enviadas(user_id: uuid.UUID) -> set[str]:
+    """As URLs de notícia que já foram para o WhatsApp — para mandar só o que é novo."""
+    async with pool().acquire() as c:
+        rows = await c.fetch("SELECT url FROM feed_enviado WHERE user_id = $1", user_id)
+    return {r["url"] for r in rows}
+
+
+async def marcar_urls_feed(user_id: uuid.UUID, urls: set[str]) -> None:
+    """Registra as URLs enviadas. ON CONFLICT ignora — reenvio nunca duplica."""
+    if not urls:
+        return
+    async with pool().acquire() as c:
+        await c.executemany(
+            "INSERT INTO feed_enviado (user_id, url) VALUES ($1, $2) "
+            "ON CONFLICT (user_id, url) DO NOTHING",
+            [(user_id, u) for u in urls],
+        )
+
+
 async def contextos_do_usuario(user_id: uuid.UUID) -> dict[int, dict]:
     """A última busca de cada pilar das teses ativas — para o painel mostrar sem N requisições."""
     async with pool().acquire() as c:

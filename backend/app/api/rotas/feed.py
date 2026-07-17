@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from app.api import repo
 from app.api.deps import usuario_atual
+from app.api.servico import usuario_de_servico
 from app.mercado import feed
 
 router = APIRouter(prefix="/api/feed", tags=["feed"])
@@ -80,3 +81,25 @@ async def atualizar(user_id: uuid.UUID = Depends(usuario_atual)) -> FeedOut:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from None
     gerado_em = feed.guardar(user_id, itens)
     return _resposta(gerado_em, itens)
+
+
+class NovidadesOut(BaseModel):
+    texto: str      # mensagem pronta para o WhatsApp; vazia = nada novo (o n8n não manda)
+    novos: int      # quantos itens inéditos nesta rodada
+
+
+@router.post("/novidades", response_model=NovidadesOut)
+async def novidades(user=Depends(usuario_de_servico)) -> NovidadesOut:
+    """Para o agendador (n8n): remonta o feed, manda só o que tem fonte INÉDITA e marca como
+    enviado. Autenticado por token de serviço (não JWT). Custa token (uma rodada de LLM)."""
+    assuntos = await repo.tickers_acompanhados(user.id)
+    try:
+        itens = await feed.gerar(assuntos)
+    except RuntimeError as e:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from None
+
+    feed.guardar(user.id, itens)  # atualiza o cache do painel de quebra
+    enviadas = await repo.urls_do_feed_enviadas(user.id)
+    novos, urls = feed.filtrar_novos(itens, enviadas)
+    await repo.marcar_urls_feed(user.id, urls)
+    return NovidadesOut(texto=feed.formatar_whatsapp(novos), novos=len(novos))

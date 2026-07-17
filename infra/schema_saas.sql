@@ -132,6 +132,23 @@ CREATE TABLE IF NOT EXISTS contexto_pilar (
     achados     JSONB       NOT NULL DEFAULT '[]'  -- [{resumo, url, fonte, data, relevancia}]
 );
 
+-- ============================================================================
+-- FEED ENVIADO — memória do que já foi para o WhatsApp (para mandar só o NOVO)
+-- ============================================================================
+--
+-- O feed regenera tudo a cada rodada; a maioria das notícias repete. "Novo" = notícia cuja URL
+-- ainda não foi enviada. Guardamos as URLs enviadas por usuário; um item só vai ao WhatsApp se
+-- tiver ao menos uma fonte inédita. Dedup pela URL (o âncora estável) — o resumo do LLM varia,
+-- a URL não.
+
+CREATE TABLE IF NOT EXISTS feed_enviado (
+    user_id     UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    url         TEXT        NOT NULL,
+    enviado_em  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, url)
+);
+CREATE INDEX IF NOT EXISTS idx_feed_enviado_user ON feed_enviado(user_id);
+
 -- ---------------------------------------------------------------- isolamento
 --
 -- A API filtra por user_id em toda query (guarda primária). RLS entra como defesa em
