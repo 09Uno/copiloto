@@ -308,6 +308,8 @@ def para_dict(item: ItemFeed) -> dict:
 
 _ICONE = {"ativo": "📈", "descoberta": "🔎", "macro": "🌐"}
 
+LIMITE_POR_RODADA = 2  # portal: no máximo 2 notícias por vez; o resto vem nas próximas rodadas
+
 
 def filtrar_novos(
     itens: list[ItemFeed], enviadas: set[str]
@@ -322,16 +324,19 @@ def filtrar_novos(
 
 
 def _mensagem(i: ItemFeed) -> str:
-    """Uma notícia = uma mensagem curta de WhatsApp, com o link pra ler."""
-    L = [f"{_ICONE.get(i.tipo, '📰')} *{i.rotulo}*", i.titulo]
+    """Uma notícia = um card curto e CONSISTENTE de WhatsApp. Hierarquia: assunto → manchete →
+    fato → o que significa → fonte. Sem URL crua: o link do Google Notícias é gigante e fica
+    horrível no celular; a fonte vai só pelo nome."""
+    p = [f"{_ICONE.get(i.tipo, '📰')} *{i.rotulo}*", ""]
+    if i.titulo:
+        p.append(f"*{i.titulo}*")
     if i.resumo:
-        L.append(i.resumo)
+        p.append(i.resumo)
     if i.mercado:
-        L.append(f"↳ _{i.mercado}_")
-    if i.fontes:
-        f = i.fontes[0]
-        L.append(f"🔗 {f.fonte or 'fonte'}: {f.url}")
-    return "\n".join(L)
+        p += ["", f"💡 _{i.mercado}_"]
+    if i.fontes and i.fontes[0].fonte:
+        p += ["", f"_via {i.fontes[0].fonte}_"]
+    return "\n".join(p)
 
 
 def mensagens_individuais(novos: list[ItemFeed]) -> list[str]:

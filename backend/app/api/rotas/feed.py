@@ -84,14 +84,16 @@ async def atualizar(user_id: uuid.UUID = Depends(usuario_atual)) -> FeedOut:
 
 
 class NovidadesOut(BaseModel):
-    mensagens: list[str]   # uma por notícia nova — o n8n manda cada uma separada; [] = nada novo
-    novos: int             # quantos itens inéditos nesta rodada
+    mensagens: list[str]   # uma por notícia — o n8n manda cada uma separada; [] = nada novo
+    enviados: int          # quantos itens saem NESTA rodada (no máx. LIMITE_POR_RODADA)
+    na_fila: int           # quantos ainda restam para as próximas rodadas
 
 
 @router.post("/novidades", response_model=NovidadesOut)
 async def novidades(user=Depends(usuario_de_servico)) -> NovidadesOut:
     """Para o agendador (n8n, de hora em hora): busca notícias, PULA o LLM onde não há nada novo,
-    e devolve UMA mensagem por notícia inédita, marcando as URLs como enviadas. Token de serviço.
+    e manda no MÁXIMO 2 por rodada (feito portal), marcando só as enviadas. O resto fica na fila
+    para as próximas horas. Token de serviço.
 
     Não mexe no cache do painel — o feed do painel é o completo (botão 'atualizar'); aqui é só o
     fio de novidades para o WhatsApp."""
@@ -102,6 +104,12 @@ async def novidades(user=Depends(usuario_de_servico)) -> NovidadesOut:
     except RuntimeError as e:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from None
 
-    novos, urls = feed.filtrar_novos(itens, enviadas)
-    await repo.marcar_urls_feed(user.id, urls)
-    return NovidadesOut(mensagens=feed.mensagens_individuais(novos), novos=len(novos))
+    novos, _ = feed.filtrar_novos(itens, enviadas)
+    a_enviar = novos[: feed.LIMITE_POR_RODADA]              # portal: no máx. 2 por vez
+    urls = {f.url for i in a_enviar for f in i.fontes}
+    await repo.marcar_urls_feed(user.id, urls)             # marca SÓ os que saem agora
+    return NovidadesOut(
+        mensagens=feed.mensagens_individuais(a_enviar),
+        enviados=len(a_enviar),
+        na_fila=len(novos) - len(a_enviar),
+    )

@@ -40,12 +40,12 @@ def test_novidade_e_a_URL_inedita():
     assert feed.mensagens_individuais(novos) == []
 
 
-def test_uma_mensagem_por_item_com_link():
-    msgs = feed.mensagens_individuais([_item("TAEE3", ["http://a"], "ativo"),
-                                       _item("VBBR3", ["http://y"], "descoberta")])
-    assert len(msgs) == 2
-    assert "TAEE3" in msgs[0] and "http://a" in msgs[0]
-    assert "VBBR3" in msgs[1]
+def test_mensagem_limpa_sem_url_crua():
+    """O card tem o assunto e a fonte pelo NOME — nada de URL gigante (fica horrível no celular)."""
+    m = feed.mensagens_individuais([_item("TAEE3", ["http://a"], "ativo")])[0]
+    assert "TAEE3" in m
+    assert "via InfoMoney" in m
+    assert "http" not in m, "não pode ter URL crua na mensagem"
 
 
 def test_gerar_PULA_o_LLM_quando_nada_novo(monkeypatch):
@@ -106,28 +106,28 @@ def test_sem_token_desliga(cliente, monkeypatch):
     assert cliente.post("/api/feed/novidades", headers={"X-Resumo-Token": "x"}).status_code == 503
 
 
-def test_manda_so_o_novo_e_nao_repete(cliente, monkeypatch):
+def test_portal_manda_no_maximo_2_e_enfileira_o_resto(cliente, monkeypatch):
+    """Feito portal: 2 por rodada, o resto vem depois, e nada repete."""
     email = f"nov_{uuid.uuid4().hex[:10]}@exemplo.com"
     assert cliente.post("/api/auth/cadastro",
                         json={"email": email, "senha": "senha-de-teste-123"}).status_code == 201
     monkeypatch.setattr(servico, "env",
                         lambda n: {"RESUMO_TOKEN": "seg", "RESUMO_EMAIL": email}.get(n))
 
-    itens = [_item("TAEE3", ["http://a"]), _item("CMIG4", ["http://b"])]
+    itens = [_item("A", ["u1"]), _item("B", ["u2"]), _item("C", ["u3"])]
 
     async def fake_gerar(assuntos, enviadas=None):
         return itens
     monkeypatch.setattr(feed, "gerar", fake_gerar)
 
-    r1 = cliente.post("/api/feed/novidades", headers={"X-Resumo-Token": "seg"})
-    assert r1.status_code == 200, r1.text
-    assert r1.json()["novos"] == 2
-    assert len(r1.json()["mensagens"]) == 2
-    assert any("TAEE3" in m for m in r1.json()["mensagens"])
+    r1 = cliente.post("/api/feed/novidades", headers={"X-Resumo-Token": "seg"}).json()
+    assert r1["enviados"] == 2 and r1["na_fila"] == 1     # 2 saem, 1 fica na fila
+    assert len(r1["mensagens"]) == 2
 
-    # mesma rodada de novo → nada novo (as URLs já foram marcadas)
-    r2 = cliente.post("/api/feed/novidades", headers={"X-Resumo-Token": "seg"})
-    assert r2.json()["novos"] == 0
-    assert r2.json()["mensagens"] == []
+    r2 = cliente.post("/api/feed/novidades", headers={"X-Resumo-Token": "seg"}).json()
+    assert r2["enviados"] == 1 and r2["na_fila"] == 0     # o 3º sai agora
+
+    r3 = cliente.post("/api/feed/novidades", headers={"X-Resumo-Token": "seg"}).json()
+    assert r3["enviados"] == 0 and r3["mensagens"] == []  # nada novo
 
     _apagar(email)
