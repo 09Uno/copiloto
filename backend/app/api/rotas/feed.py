@@ -84,22 +84,24 @@ async def atualizar(user_id: uuid.UUID = Depends(usuario_atual)) -> FeedOut:
 
 
 class NovidadesOut(BaseModel):
-    texto: str      # mensagem pronta para o WhatsApp; vazia = nada novo (o n8n não manda)
-    novos: int      # quantos itens inéditos nesta rodada
+    mensagens: list[str]   # uma por notícia nova — o n8n manda cada uma separada; [] = nada novo
+    novos: int             # quantos itens inéditos nesta rodada
 
 
 @router.post("/novidades", response_model=NovidadesOut)
 async def novidades(user=Depends(usuario_de_servico)) -> NovidadesOut:
-    """Para o agendador (n8n): remonta o feed, manda só o que tem fonte INÉDITA e marca como
-    enviado. Autenticado por token de serviço (não JWT). Custa token (uma rodada de LLM)."""
+    """Para o agendador (n8n, de hora em hora): busca notícias, PULA o LLM onde não há nada novo,
+    e devolve UMA mensagem por notícia inédita, marcando as URLs como enviadas. Token de serviço.
+
+    Não mexe no cache do painel — o feed do painel é o completo (botão 'atualizar'); aqui é só o
+    fio de novidades para o WhatsApp."""
     assuntos = await repo.tickers_acompanhados(user.id)
+    enviadas = await repo.urls_do_feed_enviadas(user.id)
     try:
-        itens = await feed.gerar(assuntos)
+        itens = await feed.gerar(assuntos, enviadas)   # modo barato: sem token onde não há novidade
     except RuntimeError as e:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from None
 
-    feed.guardar(user.id, itens)  # atualiza o cache do painel de quebra
-    enviadas = await repo.urls_do_feed_enviadas(user.id)
     novos, urls = feed.filtrar_novos(itens, enviadas)
     await repo.marcar_urls_feed(user.id, urls)
-    return NovidadesOut(texto=feed.formatar_whatsapp(novos), novos=len(novos))
+    return NovidadesOut(mensagens=feed.mensagens_individuais(novos), novos=len(novos))

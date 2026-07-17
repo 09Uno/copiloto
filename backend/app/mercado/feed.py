@@ -221,20 +221,26 @@ def _itens_descoberta(dados: dict, noticias: list[dict], excluir: set[str]) -> l
 # ------------------------------------------------------------------ coleta por assunto
 
 
+def _tudo_ja_enviado(noticias: list[dict], enviadas: set[str] | None) -> bool:
+    """Com a lista de já-enviadas, se NENHUMA notícia é inédita, não há o que resumir — pula o
+    LLM. É o que torna a checagem de hora em hora barata: token só quando há notícia nova."""
+    return enviadas is not None and all(n["url"] in enviadas for n in noticias)
+
+
 async def _sintetizar(
     tipo: str, assunto: str, rotulo: str, termo: str, na_carteira: bool | None,
-    desde,
+    desde, enviadas: set[str] | None = None,
 ) -> ItemFeed | None:
     noticias = await buscador._noticias(termo, desde)
-    if not noticias:
-        return None  # sem notícia, sem gastar token
+    if not noticias or _tudo_ja_enviado(noticias, enviadas):
+        return None  # sem notícia (ou nada novo) — sem gastar token
     dados = await _chamar(_SISTEMA_ITEM, f"ASSUNTO: {rotulo}\n\nNOTÍCIAS:\n{_lista(noticias)}")
     return _item_de_dados(dados, tipo, assunto, rotulo, na_carteira, noticias)
 
 
-async def _descobrir(excluir: set[str], desde) -> list[ItemFeed]:
+async def _descobrir(excluir: set[str], desde, enviadas: set[str] | None = None) -> list[ItemFeed]:
     noticias = await buscador._noticias(QUERY_DESCOBERTA, desde)
-    if not noticias:
+    if not noticias or _tudo_ja_enviado(noticias, enviadas):
         return []
     dados = await _chamar(
         _SISTEMA_DESCOBERTA, f"NOTÍCIAS DO MERCADO:\n{_lista(noticias)}"
@@ -242,10 +248,14 @@ async def _descobrir(excluir: set[str], desde) -> list[ItemFeed]:
     return _itens_descoberta(dados, noticias, excluir)
 
 
-async def gerar(assuntos: list[tuple[str, bool]]) -> list[ItemFeed]:
-    """Monta o feed inteiro: os ativos do usuário + macro + descoberta, tudo concorrente.
+async def gerar(
+    assuntos: list[tuple[str, bool]], enviadas: set[str] | None = None
+) -> list[ItemFeed]:
+    """Monta o feed: os ativos do usuário + macro + descoberta, tudo concorrente.
 
-    `assuntos` = [(ticker, na_carteira)], vindo da carteira ∪ teses ativas do usuário.
+    `assuntos` = [(ticker, na_carteira)], da carteira ∪ teses ativas. Se `enviadas` (URLs já
+    mandadas) for dado, PULA o LLM nos assuntos sem notícia nova — é o modo "checar de hora em
+    hora" barato. Sem `enviadas`, regenera tudo (o botão 'atualizar' do painel).
     Levanta RuntimeError se a chave não estiver configurada — a rota traduz em 503 claro.
     """
     if not disponivel():
@@ -266,11 +276,11 @@ async def gerar(assuntos: list[tuple[str, bool]]) -> list[ItemFeed]:
         nome = buscador.termo_busca(ticker)
         rotulo = f"{nome} ({ticker})" if nome.upper() != ticker.upper() else ticker
         coros.append(_com_limite(
-            _sintetizar("ativo", ticker.upper(), rotulo, nome, na_carteira, desde)
+            _sintetizar("ativo", ticker.upper(), rotulo, nome, na_carteira, desde, enviadas)
         ))
     for chave, rotulo, termo in MACRO:
-        coros.append(_com_limite(_sintetizar("macro", chave, rotulo, termo, None, desde)))
-    coros.append(_com_limite(_descobrir(excluir, desde)))
+        coros.append(_com_limite(_sintetizar("macro", chave, rotulo, termo, None, desde, enviadas)))
+    coros.append(_com_limite(_descobrir(excluir, desde, enviadas)))
 
     # Um assunto que falhar (rede/timeout) não pode derrubar o feed inteiro.
     resultados = await asyncio.gather(*coros, return_exceptions=True)
@@ -296,12 +306,7 @@ def para_dict(item: ItemFeed) -> dict:
 
 # ------------------------------------------------------------------ novidades → WhatsApp
 
-MAX_WPP = 8  # teto de itens na mensagem; o resto fica no painel (não vira um textão)
-_GRUPO = {
-    "ativo": "📈 *Seus ativos*",
-    "descoberta": "🔎 *Giro do mercado*",
-    "macro": "🌐 *Macro*",
-}
+_ICONE = {"ativo": "📈", "descoberta": "🔎", "macro": "🌐"}
 
 
 def filtrar_novos(
@@ -316,24 +321,19 @@ def filtrar_novos(
     return novos, urls
 
 
-def formatar_whatsapp(novos: list[ItemFeed]) -> str:
-    """Monta a mensagem do WhatsApp com o que é novo. Vazio = nada novo (o n8n não manda)."""
-    if not novos:
-        return ""
-    mostrados = novos[:MAX_WPP]
-    L = [f"📰 *Mercado — novidades ({len(novos)})*"]
-    grupo = None
-    for i in mostrados:
-        if i.tipo != grupo:
-            grupo = i.tipo
-            L.append("")
-            L.append(_GRUPO.get(i.tipo, "*Outros*"))
-        L.append(f"• *{i.rotulo}* — {i.titulo}")
-        if i.resumo:
-            L.append(f"  {i.resumo}")
-        if i.mercado:
-            L.append(f"  ↳ _{i.mercado}_")
-    resto = len(novos) - len(mostrados)
-    if resto > 0:
-        L += ["", f"_+{resto} no painel de Mercado._"]
+def _mensagem(i: ItemFeed) -> str:
+    """Uma notícia = uma mensagem curta de WhatsApp, com o link pra ler."""
+    L = [f"{_ICONE.get(i.tipo, '📰')} *{i.rotulo}*", i.titulo]
+    if i.resumo:
+        L.append(i.resumo)
+    if i.mercado:
+        L.append(f"↳ _{i.mercado}_")
+    if i.fontes:
+        f = i.fontes[0]
+        L.append(f"🔗 {f.fonte or 'fonte'}: {f.url}")
     return "\n".join(L)
+
+
+def mensagens_individuais(novos: list[ItemFeed]) -> list[str]:
+    """Uma mensagem por item — o n8n manda cada uma separada. Lista vazia = nada novo."""
+    return [_mensagem(i) for i in novos]

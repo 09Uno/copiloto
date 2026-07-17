@@ -1,7 +1,11 @@
-"""Feed → WhatsApp: manda só o que é NOVO, e nunca repete.
+"""Feed → WhatsApp: uma mensagem por notícia NOVA, checado de hora em hora, sem repetir e sem
+gastar token à toa.
 
-O contrato: novidade é notícia com URL inédita; ao enviar, a URL vira 'já enviada'; a rodada
-seguinte com as mesmas notícias não manda nada. É o vigia — só fala quando muda."""
+Contratos que viram teste:
+  1. Novidade é notícia com URL inédita; ao enviar, a URL vira 'já enviada'; a rodada seguinte
+     com as mesmas notícias não manda nada.
+  2. Se um assunto não tem notícia nova, o LLM NEM é chamado (a checagem de 1h tem de ser barata).
+"""
 
 from __future__ import annotations
 
@@ -16,8 +20,9 @@ from app.mercado.feed import Fonte, ItemFeed
 
 
 def _item(assunto, urls, tipo="ativo"):
-    return ItemFeed(tipo=tipo, assunto=assunto, rotulo=assunto, titulo="t", resumo="r",
-                    mercado="m", fontes=[Fonte(u, "InfoMoney", "2026-07-16") for u in urls],
+    return ItemFeed(tipo=tipo, assunto=assunto, rotulo=assunto, titulo="titulo", resumo="resumo",
+                    mercado="pode significar X",
+                    fontes=[Fonte(u, "InfoMoney", "2026-07-16") for u in urls],
                     data="2026-07-16", na_carteira=True)
 
 
@@ -32,13 +37,37 @@ def test_novidade_e_a_URL_inedita():
 
     novos, _ = feed.filtrar_novos(itens, {"a", "b", "c"})  # tudo enviado → nada
     assert novos == []
-    assert feed.formatar_whatsapp(novos) == ""
+    assert feed.mensagens_individuais(novos) == []
 
 
-def test_uma_fonte_nova_ja_torna_o_item_novo():
-    itens = [_item("TAEE3", ["a", "nova"])]
-    novos, _ = feed.filtrar_novos(itens, {"a"})            # 'nova' é inédita → conta
-    assert len(novos) == 1
+def test_uma_mensagem_por_item_com_link():
+    msgs = feed.mensagens_individuais([_item("TAEE3", ["http://a"], "ativo"),
+                                       _item("VBBR3", ["http://y"], "descoberta")])
+    assert len(msgs) == 2
+    assert "TAEE3" in msgs[0] and "http://a" in msgs[0]
+    assert "VBBR3" in msgs[1]
+
+
+def test_gerar_PULA_o_LLM_quando_nada_novo(monkeypatch):
+    """A economia que faz a checagem de 1h valer a pena: se as notícias já foram todas enviadas,
+    não gasta uma chamada de IA sequer."""
+    from app.contexto import buscador
+    chamou_llm = {"n": 0}
+
+    async def noticias_velhas(termo, desde):
+        return [{"titulo": "x", "url": "http://ja", "fonte": "F", "data": "2026-07-16"}]
+
+    async def spy(*a, **k):
+        chamou_llm["n"] += 1
+        return {"relevante": False}
+
+    monkeypatch.setattr(feed, "disponivel", lambda: True)
+    monkeypatch.setattr(buscador, "_noticias", noticias_velhas)
+    monkeypatch.setattr(feed, "_chamar", spy)
+
+    itens = asyncio.run(feed.gerar([("TAEE3", True)], enviadas={"http://ja"}))
+    assert itens == []
+    assert chamou_llm["n"] == 0, "não pode chamar o LLM se nenhuma notícia é nova"
 
 
 # --------------------------------------------------------------- API (banco real; auto-pula)
@@ -86,18 +115,19 @@ def test_manda_so_o_novo_e_nao_repete(cliente, monkeypatch):
 
     itens = [_item("TAEE3", ["http://a"]), _item("CMIG4", ["http://b"])]
 
-    async def fake_gerar(assuntos):
+    async def fake_gerar(assuntos, enviadas=None):
         return itens
     monkeypatch.setattr(feed, "gerar", fake_gerar)
 
     r1 = cliente.post("/api/feed/novidades", headers={"X-Resumo-Token": "seg"})
     assert r1.status_code == 200, r1.text
     assert r1.json()["novos"] == 2
-    assert "TAEE3" in r1.json()["texto"]
+    assert len(r1.json()["mensagens"]) == 2
+    assert any("TAEE3" in m for m in r1.json()["mensagens"])
 
     # mesma rodada de novo → nada novo (as URLs já foram marcadas)
     r2 = cliente.post("/api/feed/novidades", headers={"X-Resumo-Token": "seg"})
     assert r2.json()["novos"] == 0
-    assert r2.json()["texto"] == ""
+    assert r2.json()["mensagens"] == []
 
     _apagar(email)
