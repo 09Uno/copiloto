@@ -135,23 +135,28 @@ _SISTEMA_DESCOBERTA = (
 
 
 _SISTEMA_BOLETIM = (
-    "Você é um analista escrevendo um BOLETIM curto de mercado para um investidor pessoa física "
-    "na B3. Recebe uma lista NUMERADA de notícias reais recentes — sobre os ATIVOS dele, o "
-    "MERCADO e a MACRO (juros, inflação, câmbio, atividade).\n"
-    "Escreva UM texto corrido, coeso e CURTO (no máximo 4 a 6 frases), como um analista contando "
-    "o dia. Priorize o que mais importa e agrupe naturalmente (a macro primeiro, depois os ativos "
-    "dele). Para cada ponto relevante, pese os DOIS lados: o efeito positivo E o risco ou custo de "
+    "Você é um analista escrevendo um BOLETIM de mercado para um investidor pessoa física na B3. "
+    "Recebe uma lista NUMERADA de notícias reais recentes — sobre os ATIVOS dele, o MERCADO e a "
+    "MACRO (juros, inflação, câmbio, atividade).\n"
+    "Escreva um texto DETALHADO porém organizado, em 2 parágrafos curtos: o primeiro sobre a "
+    "MACRO, o segundo sobre os ATIVOS dele. Para cada ponto relevante diga O QUE aconteceu (com o "
+    "dado/número quando houver) e pese os DOIS lados — o efeito positivo E o risco ou custo de "
     "CURTO PRAZO (ex.: uma aquisição cresce a receita MAS aumenta a dívida; um corte de juros "
-    "alivia o crédito MAS pode sinalizar economia fraca). Não seja torcedor de um lado só — a "
+    "alivia o crédito MAS pode sinalizar economia fraca). Não seja torcedor de um lado só; a "
     "contrapartida é o que costuma faltar.\n"
+    "Além do texto, retorne em 'materias' as PRINCIPAIS notícias que você usou (no máximo 6), "
+    "cada uma com um 'rotulo' curto (ex.: 'Taesa — aquisição de transmissoras') e 'fonte' (o "
+    "NÚMERO da notícia na lista).\n"
     "NUNCA recomende comprar, vender ou manter; NUNCA dê preço-alvo ou nota própria — "
     "preço-alvo/recomendação é sempre de um ANALISTA citado na notícia. Use SOMENTE as notícias "
-    "fornecidas; não invente fato, número ou empresa. Se NENHUMA for relevante, "
+    "fornecidas; não invente fato, número, empresa nem número de fonte. Se NENHUMA for relevante, "
     '{"vazio": true}.\n'
-    'Responda só JSON: {"vazio": bool, "texto": "o boletim em texto corrido"}'
+    'Responda só JSON: {"vazio": bool, "texto": "os 2 parágrafos", '
+    '"materias": [{"rotulo": "...", "fonte": int}]}'
 )
 
-CAP_BOLETIM = 40  # teto de manchetes por boletim — segura o custo do único LLM
+CAP_BOLETIM = 40   # teto de manchetes por boletim — segura o custo do único LLM
+MAX_LINKS = 6      # quantas matérias entram na seção "Leia mais"
 
 
 def _lista(noticias: list[dict]) -> str:
@@ -372,16 +377,35 @@ async def boletim(
 
     urls = {n["url"] for _, n in novas}
     novas.sort(key=lambda x: x[1]["data"] or "", reverse=True)
+    mostradas = novas[:CAP_BOLETIM]
     lista = "\n".join(
         f"{i}. [{n['data'] or 's/data'}] ({rot}) {n['titulo']} ({n['fonte'] or '?'})"
-        for i, (rot, n) in enumerate(novas[:CAP_BOLETIM], 1)
+        for i, (rot, n) in enumerate(mostradas, 1)
     )
     dados = await _chamar(_SISTEMA_BOLETIM, f"NOTÍCIAS NOVAS:\n{lista}")
     texto = "" if dados.get("vazio") else str(dados.get("texto", "")).strip()
     if not texto:
         return "", urls  # LLM não achou nada digno — marca como visto, não manda
-    cabecalho = f"📊 *Boletim — {datetime.now():%d/%m}*"
-    return f"{cabecalho}\n\n{texto}", urls
+
+    # seção "Leia mais": rótulo do LLM + a URL real da notícia. Índice fora da lista (o LLM
+    # inventou) é descartado — a mesma trava anti-alucinação dos outros pontos.
+    links: list[str] = []
+    vistos: set[str] = set()
+    for m in (dados.get("materias") or [])[:MAX_LINKS]:
+        try:
+            noticia = mostradas[int(m["fonte"]) - 1][1]
+        except (KeyError, ValueError, IndexError, TypeError):
+            continue
+        if noticia["url"] in vistos:
+            continue
+        vistos.add(noticia["url"])
+        rot = str(m.get("rotulo", "")).strip() or noticia["titulo"]
+        links.append(f"• *{rot}*\n{noticia['url']}")
+
+    partes = [f"📊 *Boletim — {datetime.now():%d/%m}*", "", texto]
+    if links:
+        partes += ["", "🔗 *Leia mais*", *links]
+    return "\n".join(partes), urls
 
 
 # ------------------------------------------------------------------ novidades → WhatsApp

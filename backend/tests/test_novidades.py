@@ -156,7 +156,8 @@ def test_boletim_uma_chamada_de_llm_e_dedup(cliente, monkeypatch):
 
     async def chamar(sistema, usuario):
         chamou["n"] += 1
-        return {"vazio": False, "texto": "Taesa avança em transmissão, ao custo de mais dívida."}
+        return {"vazio": False, "texto": "Taesa avança em transmissão, ao custo de mais dívida.",
+                "materias": [{"rotulo": "Taesa — aquisição", "fonte": 1}]}
 
     monkeypatch.setattr(feed, "disponivel", lambda: True)
     monkeypatch.setattr(buscador, "_noticias", noticias)
@@ -164,6 +165,7 @@ def test_boletim_uma_chamada_de_llm_e_dedup(cliente, monkeypatch):
 
     r1 = cliente.post("/api/feed/boletim", headers=H).json()
     assert "Boletim" in r1["texto"] and "dívida" in r1["texto"]
+    assert "Leia mais" in r1["texto"] and "http://a" in r1["texto"]   # seção de links
     assert chamou["n"] == 1, "um boletim = uma chamada de LLM"
 
     r2 = cliente.post("/api/feed/boletim", headers=H).json()
