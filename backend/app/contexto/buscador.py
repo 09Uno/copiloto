@@ -44,6 +44,10 @@ NOMES: dict[str, str] = {
     "KLBN4": "Klabin", "KLBN3": "Klabin", "KLBN11": "Klabin",
     "ROXO34": "Nubank", "BTC": "Bitcoin",
     "GOLD11": "GOLD11 ouro",
+    "PETR4": "Petrobras", "PETR3": "Petrobras",
+    "VALE3": "Vale mineradora",
+    "CXSE3": "Caixa Seguridade",
+    "JHSF3": "JHSF",
 }
 
 
