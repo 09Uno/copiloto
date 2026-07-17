@@ -9,6 +9,14 @@ const nextConfig: NextConfig = {
 
   // Produção: gera um server.js mínimo (só o runtime necessário) para uma imagem Docker enxuta.
   output: "standalone",
+
+  // Em produção o próprio servidor do painel repassa /api → API interna (copiloto-api:8000).
+  // Assim o navegador só fala com UM domínio (o painel), a API não fica exposta e não há CORS.
+  // Local (sem API_PROXY_TARGET) não reescreve nada — o dev usa NEXT_PUBLIC_API_URL direto.
+  async rewrites() {
+    const alvo = process.env.API_PROXY_TARGET;
+    return alvo ? [{ source: "/api/:path*", destination: `${alvo}/api/:path*` }] : [];
+  },
 };
 
 export default nextConfig;

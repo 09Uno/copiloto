@@ -15,8 +15,12 @@ FROM node:22-slim AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY web/ ./
-ARG NEXT_PUBLIC_API_URL
+# NEXT_PUBLIC_API_URL vazio → o cliente chama /api relativo (mesma origem do painel).
+# API_PROXY_TARGET é assado no rewrite: para onde o servidor do painel repassa /api.
+ARG NEXT_PUBLIC_API_URL=""
+ARG API_PROXY_TARGET
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV API_PROXY_TARGET=$API_PROXY_TARGET
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 

@@ -26,17 +26,15 @@ services:
     networks:
       - proxy-net
 
-  # ── Painel web. O navegador chama a API DIRETO, então NEXT_PUBLIC_API_URL (assado no build)
-  #    é a URL PÚBLICA da API. No NPM crie dois Proxy Hosts:
-  #      copiloto.codetoyou.tech      → copiloto-web : 3000
-  #      copiloto-api.codetoyou.tech  → copiloto-api : 8000
-  #    e confirme CORS_ORIGENS=https://copiloto.codetoyou.tech no .env.
+  # ── Painel web. O próprio painel repassa /api → copiloto-api:8000 (interno), então UM host
+  #    só no NPM (copiloto.codetoyou.tech → copiloto-web:3000), a API não fica exposta e sem CORS.
   copiloto-web:
     build:
       context: ./repo
       dockerfile: web/Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: https://copiloto-api.codetoyou.tech
+        NEXT_PUBLIC_API_URL: ""                       # cliente chama /api relativo (mesma origem)
+        API_PROXY_TARGET: http://copiloto-api:8000    # para onde o painel repassa /api
     container_name: copiloto-web
     restart: always
     networks:
