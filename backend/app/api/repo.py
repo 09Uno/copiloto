@@ -342,6 +342,40 @@ async def marcar_urls_feed(user_id: uuid.UUID, urls: set[str]) -> None:
         )
 
 
+# ---------------------------------------------------------------- fila de saída do feed
+
+
+async def enfileirar_feed(user_id: uuid.UUID, mensagens: list[str]) -> None:
+    """Põe as mensagens novas na fila de saída — o 'proxima' drena depois, aos poucos."""
+    if not mensagens:
+        return
+    async with pool().acquire() as c:
+        await c.executemany(
+            "INSERT INTO feed_fila (user_id, mensagem) VALUES ($1, $2)",
+            [(user_id, m) for m in mensagens],
+        )
+
+
+async def proximas_da_fila(user_id: uuid.UUID, n: int) -> list[str]:
+    """Tira as `n` mensagens MAIS ANTIGAS da fila (FIFO) e as devolve. DELETE ... RETURNING numa
+    transação: uma mensagem entregue nunca volta, e duas execuções não pegam a mesma."""
+    async with pool().acquire() as c, c.transaction():
+        rows = await c.fetch(
+            """
+            DELETE FROM feed_fila
+             WHERE id IN (SELECT id FROM feed_fila WHERE user_id = $1 ORDER BY id LIMIT $2)
+            RETURNING id, mensagem
+            """,
+            user_id, n,
+        )
+    return [r["mensagem"] for r in sorted(rows, key=lambda r: r["id"])]
+
+
+async def tamanho_fila_feed(user_id: uuid.UUID) -> int:
+    async with pool().acquire() as c:
+        return await c.fetchval("SELECT count(*) FROM feed_fila WHERE user_id = $1", user_id)
+
+
 async def contextos_do_usuario(user_id: uuid.UUID) -> dict[int, dict]:
     """A última busca de cada pilar das teses ativas — para o painel mostrar sem N requisições."""
     async with pool().acquire() as c:

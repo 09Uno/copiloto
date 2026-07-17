@@ -83,20 +83,24 @@ async def atualizar(user_id: uuid.UUID = Depends(usuario_atual)) -> FeedOut:
     return _resposta(gerado_em, itens)
 
 
-class NovidadesOut(BaseModel):
-    mensagens: list[str]   # uma por notícia — o n8n manda cada uma separada; [] = nada novo
-    enviados: int          # quantos itens saem NESTA rodada (no máx. LIMITE_POR_RODADA)
-    na_fila: int           # quantos ainda restam para as próximas rodadas
+class ColetarOut(BaseModel):
+    coletados: int   # quantas notícias novas entraram na fila nesta busca
+    na_fila: int     # total esperando para sair
 
 
-@router.post("/novidades", response_model=NovidadesOut)
-async def novidades(user=Depends(usuario_de_servico)) -> NovidadesOut:
-    """Para o agendador (n8n, de hora em hora): busca notícias, PULA o LLM onde não há nada novo,
-    e manda no MÁXIMO 2 por rodada (feito portal), marcando só as enviadas. O resto fica na fila
-    para as próximas horas. Token de serviço.
+class ProximaOut(BaseModel):
+    mensagens: list[str]   # até LIMITE_POR_RODADA, as mais antigas da fila; [] = fila vazia
+    enviados: int
+    na_fila: int           # quantas ainda restam
 
-    Não mexe no cache do painel — o feed do painel é o completo (botão 'atualizar'); aqui é só o
-    fio de novidades para o WhatsApp."""
+
+@router.post("/coletar", response_model=ColetarOut)
+async def coletar(user=Depends(usuario_de_servico)) -> ColetarOut:
+    """ESPARSO (ex.: a cada 30 min). Busca notícias, PULA o LLM onde não há nada novo, e
+    ENFILEIRA as novas — sem mandar nada. Marca as URLs para não recoletar. Token de serviço.
+
+    Separado do envio de propósito: a busca é o que pesa (Google + LLM), então roda pouco; a
+    entrega no WhatsApp sai da fila, rápida, sem tocar em nada externo."""
     assuntos = await repo.tickers_acompanhados(user.id)
     enviadas = await repo.urls_do_feed_enviadas(user.id)
     try:
@@ -104,12 +108,17 @@ async def novidades(user=Depends(usuario_de_servico)) -> NovidadesOut:
     except RuntimeError as e:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from None
 
-    novos, _ = feed.filtrar_novos(itens, enviadas)
-    a_enviar = novos[: feed.LIMITE_POR_RODADA]              # portal: no máx. 2 por vez
-    urls = {f.url for i in a_enviar for f in i.fontes}
-    await repo.marcar_urls_feed(user.id, urls)             # marca SÓ os que saem agora
-    return NovidadesOut(
-        mensagens=feed.mensagens_individuais(a_enviar),
-        enviados=len(a_enviar),
-        na_fila=len(novos) - len(a_enviar),
+    novos, urls = feed.filtrar_novos(itens, enviadas)
+    await repo.marcar_urls_feed(user.id, urls)          # captura: não recoleta a mesma notícia
+    await repo.enfileirar_feed(user.id, feed.mensagens_individuais(novos))
+    return ColetarOut(coletados=len(novos), na_fila=await repo.tamanho_fila_feed(user.id))
+
+
+@router.post("/proxima", response_model=ProximaOut)
+async def proxima(user=Depends(usuario_de_servico)) -> ProximaOut:
+    """FREQUENTE (ex.: a cada 2-3 min). Tira até 2 mensagens da fila (FIFO) e devolve — sem
+    buscar nada. É o fio de saída: intervalo curto sem martelar o Google. Token de serviço."""
+    msgs = await repo.proximas_da_fila(user.id, feed.LIMITE_POR_RODADA)
+    return ProximaOut(
+        mensagens=msgs, enviados=len(msgs), na_fila=await repo.tamanho_fila_feed(user.id)
     )

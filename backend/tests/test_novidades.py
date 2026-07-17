@@ -103,14 +103,15 @@ def cliente():
 
 def test_sem_token_desliga(cliente, monkeypatch):
     monkeypatch.setattr(servico, "env", lambda _: None)
-    assert cliente.post("/api/feed/novidades", headers={"X-Resumo-Token": "x"}).status_code == 503
+    assert cliente.post("/api/feed/coletar", headers={"X-Resumo-Token": "x"}).status_code == 503
 
 
-def test_portal_manda_no_maximo_2_e_enfileira_o_resto(cliente, monkeypatch):
-    """Feito portal: 2 por rodada, o resto vem depois, e nada repete."""
+def test_coletar_enfileira_e_proxima_drena_2_por_vez(cliente, monkeypatch):
+    """Coletar (esparso) enfileira e não duplica; proxima (frequente) drena 2 por vez, FIFO."""
     email = f"nov_{uuid.uuid4().hex[:10]}@exemplo.com"
     assert cliente.post("/api/auth/cadastro",
                         json={"email": email, "senha": "senha-de-teste-123"}).status_code == 201
+    H = {"X-Resumo-Token": "seg"}
     monkeypatch.setattr(servico, "env",
                         lambda n: {"RESUMO_TOKEN": "seg", "RESUMO_EMAIL": email}.get(n))
 
@@ -120,14 +121,17 @@ def test_portal_manda_no_maximo_2_e_enfileira_o_resto(cliente, monkeypatch):
         return itens
     monkeypatch.setattr(feed, "gerar", fake_gerar)
 
-    r1 = cliente.post("/api/feed/novidades", headers={"X-Resumo-Token": "seg"}).json()
-    assert r1["enviados"] == 2 and r1["na_fila"] == 1     # 2 saem, 1 fica na fila
-    assert len(r1["mensagens"]) == 2
+    col = cliente.post("/api/feed/coletar", headers=H).json()
+    assert col["coletados"] == 3 and col["na_fila"] == 3
+    col2 = cliente.post("/api/feed/coletar", headers=H).json()   # URLs já marcadas → não duplica
+    assert col2["coletados"] == 0 and col2["na_fila"] == 3
 
-    r2 = cliente.post("/api/feed/novidades", headers={"X-Resumo-Token": "seg"}).json()
-    assert r2["enviados"] == 1 and r2["na_fila"] == 0     # o 3º sai agora
-
-    r3 = cliente.post("/api/feed/novidades", headers={"X-Resumo-Token": "seg"}).json()
-    assert r3["enviados"] == 0 and r3["mensagens"] == []  # nada novo
+    p1 = cliente.post("/api/feed/proxima", headers=H).json()
+    assert p1["enviados"] == 2 and p1["na_fila"] == 1            # drena 2 (os mais antigos)
+    assert any("*A*" in m for m in p1["mensagens"])              # FIFO: A veio primeiro
+    p2 = cliente.post("/api/feed/proxima", headers=H).json()
+    assert p2["enviados"] == 1 and p2["na_fila"] == 0
+    p3 = cliente.post("/api/feed/proxima", headers=H).json()
+    assert p3["enviados"] == 0 and p3["mensagens"] == []         # fila vazia
 
     _apagar(email)

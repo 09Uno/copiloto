@@ -149,6 +149,17 @@ CREATE TABLE IF NOT EXISTS feed_enviado (
 );
 CREATE INDEX IF NOT EXISTS idx_feed_enviado_user ON feed_enviado(user_id);
 
+-- Fila de saída: desacopla BUSCAR (esparso, não martela o Google) de ENVIAR (frequente, drena
+-- 1-2 por vez). O 'coletar' enfileira as mensagens novas; o 'proxima' tira as mais antigas e
+-- manda. Assim a entrega no WhatsApp tem intervalo curto sem buscar notícia toda hora.
+CREATE TABLE IF NOT EXISTS feed_fila (
+    id         BIGSERIAL   PRIMARY KEY,
+    user_id    UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    mensagem   TEXT        NOT NULL,
+    criado_em  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_feed_fila_user ON feed_fila(user_id, id);
+
 -- ---------------------------------------------------------------- isolamento
 --
 -- A API filtra por user_id em toda query (guarda primária). RLS entra como defesa em
