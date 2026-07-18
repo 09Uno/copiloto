@@ -52,6 +52,11 @@ class Acao(ClasseDeAtivo):
             "pvp_vs_historia": "P/VP vs. a mediana do próprio papel",
         }
 
+    def metricas_percentuais(self) -> set[str]:
+        # As frações exibidas em %. Fora daqui de propósito: pl_vs_historia/pvp_vs_historia (são
+        # razões ~1,4, não %), os múltiplos (pl, pvp, divida_ebit) e os R$ (lpa, vpa, dpa).
+        return {"roe", "cresc_lucro", "cresc_receita", "payout", "margem", "dy"}
+
     def avaliar(self, ticker: str, preco: float | None, meta_yield: float) -> Avaliacao:
         linha = self._mapa[self._mapa["ticker"] == ticker]
         if linha.empty:

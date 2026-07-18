@@ -188,3 +188,43 @@ def test_tese_de_observacao_nao_dispara_guarda_de_quebrada(cliente, logado):
     )
     assert r2.status_code == 409, r2.text
     assert "nasce quebrada" in r2.text
+
+
+def test_meta_yield_por_tese_e_o_alvo_nao_um_pilar(cliente, logado):
+    """O preço-alvo é da TESE (meta_yield), separado dos pilares. Ter o ativo e mirar num yield
+    mais alto do que ele paga hoje NÃO quebra a tese — é uma mira de entrada, não uma afirmação.
+    É o que resolve o 'quero dy>6% como tese, mas o alvo calculado a 8%'."""
+    cliente.put("/api/carteira/posicao",   # tenho o ativo → a guarda de 'quebrada' está ligada
+                json={"ticker": "TAEE3", "quantidade": 100, "custo_medio": 13.0},
+                headers=logado)
+
+    # pilar factível (dy>1% qualquer pagadora atinge) + meta AGRESSIVA de 8% no alvo
+    r = cliente.post(
+        "/api/teses",
+        json={"ticker": "TAEE3", "resumo": "transmissão", "meta_yield": 0.08,
+              "pilares": [{"texto": "dy>1%"}]},
+        headers=logado,
+    )
+    assert r.status_code == 201, r.text          # 8% no ALVO não é pilar → não nasce quebrada
+    assert r.json()["meta_yield"] == pytest.approx(0.08)
+
+    # a edição grava a nova meta (antes o PUT nem tocava nela)
+    tid = r.json()["tese_id"]
+    r2 = cliente.put(
+        f"/api/teses/{tid}",
+        json={"ticker": "TAEE3", "resumo": "transmissão", "meta_yield": 0.09,
+              "pilares": [{"texto": "dy>1%"}]},
+        headers=logado,
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["meta_yield"] == pytest.approx(0.09)
+
+    # meta fora de (0, 1] é fração mal digitada (8 em vez de 0.08) — recusa ENSINANDO
+    r3 = cliente.post(
+        "/api/teses",
+        json={"ticker": "TAEE3", "resumo": "x", "meta_yield": 8,
+              "pilares": [{"texto": "dy>1%"}]},
+        headers=logado,
+    )
+    assert r3.status_code == 422, r3.text
+    assert "meta de yield inválida" in r3.text

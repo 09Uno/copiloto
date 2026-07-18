@@ -126,6 +126,7 @@ export type Veredito = {
   preco: number | null;
   tenho: boolean; // na carteira? senão é watchlist ("de olho")
   compra: Compra | null;
+  meta_yield: number | null; // a meta desta tese (fração) — gera o preço-alvo, pré-preenche o form
 };
 export type Aporte = {
   veredito: string;

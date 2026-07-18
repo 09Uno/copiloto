@@ -55,7 +55,14 @@ export function TeseForm({
   metricasVerificaveis: Record<string, string>;
   // presente = modo EDIÇÃO: pré-preenche e salva com PUT. Os pilares verificáveis vêm no formato
   // cru ("roe>0.25") no modo avançado — inequívoco, sem o vaivém de %/× do formulário guiado.
-  inicial?: { teseId: number; resumo: string; textos: string[]; quali: string[] };
+  // metaYield: a meta de yield gravada nesta tese (fração, ex.: 0.08) — pré-preenche o preço-alvo.
+  inicial?: {
+    teseId: number;
+    resumo: string;
+    textos: string[];
+    quali: string[];
+    metaYield?: number | null;
+  };
 }) {
   const router = useRouter();
   const metricas = Object.entries(metricasVerificaveis);
@@ -68,6 +75,10 @@ export function TeseForm({
   const [quali, setQuali] = useState<string[]>(inicial?.quali ?? []);
   const [avancado, setAvancado] = useState(editando);
   const [crus, setCrus] = useState<string[]>(inicial?.textos?.length ? inicial.textos : [""]);
+  // Meta de yield SÓ desta tese, guardada em % (vazio = usa a meta padrão da classe).
+  const [metaPct, setMetaPct] = useState(
+    inicial?.metaYield != null ? (inicial.metaYield * 100).toString() : "",
+  );
   const [enviando, setEnviando] = useState(false);
   const [quebrado, setQuebrado] = useState<string | null>(null);
 
@@ -82,6 +93,8 @@ export function TeseForm({
         ...guiados.map(textoDoGuiado).filter((t): t is string => !!t),
         ...(avancado ? crus.filter((c) => c.trim()) : []),
       ];
+      // Meta em fração (0.08). Vazio → omite → a API usa a meta padrão da classe.
+      const metaNum = Number(metaPct.trim().replace(",", "."));
       const corpo = {
         ticker,
         resumo,
@@ -89,6 +102,7 @@ export function TeseForm({
           ...textos.map((texto) => ({ texto })),
           ...quali.filter((q) => q.trim()).map((qualitativo) => ({ qualitativo })),
         ],
+        ...(metaPct.trim() && metaNum > 0 ? { meta_yield: metaNum / 100 } : {}),
         ...(aceitarQuebrado ? { aceitar_quebrado: aceitarQuebrado } : {}),
       };
       if (editando) {
@@ -274,6 +288,36 @@ export function TeseForm({
         ))}
       </div>
 
+      {/* Preço-alvo desta tese: a meta de yield que gera o teto SÓ aqui. É o que separa a tese
+          ("dy>6%", um pilar) do critério de entrada ("mira em 8%"), sem que um vire o outro —
+          por isso não passa pela guarda "nasce quebrada". */}
+      <div className="space-y-2 rounded-lg border p-3">
+        <Label htmlFor="meta-yield">Preço-alvo desta tese (opcional)</Label>
+        <p className="text-xs text-muted-foreground">
+          O yield que gera o preço-alvo só desta tese —{" "}
+          <code className="font-mono">teto = provento ÷ meta</code>. Meta mais alta = alvo mais
+          baixo, mais exigente.{" "}
+          <strong className="text-foreground">Não é um pilar: não quebra a tese.</strong> Vazio usa
+          a sua meta padrão.
+        </p>
+        <div className="relative max-w-40">
+          <Input
+            id="meta-yield"
+            type="number"
+            step="0.1"
+            min="0"
+            inputMode="decimal"
+            value={metaPct}
+            onChange={(e) => setMetaPct(e.target.value)}
+            placeholder="ex.: 8"
+            className="font-mono pr-10"
+          />
+          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">
+            %
+          </span>
+        </div>
+      </div>
+
       {/* Modo avançado: texto cru, para quem já domina a sintaxe. */}
       <div className="space-y-2">
         <button
@@ -287,7 +331,9 @@ export function TeseForm({
           <div className="space-y-2 rounded-lg border border-dashed p-3">
             <p className="text-xs text-muted-foreground">
               Uma linha por pilar. Ex.: <code>payout&lt;80%</code>,{" "}
-              <code>divida_ebit&lt;5@2028-06</code>. Disponíveis:{" "}
+              <code>divida_ebit&lt;5@2028-06</code>. Em métrica de %, número pelado já é %:{" "}
+              <code>dy&gt;6</code> = 6% (ou <code>dy&gt;6%</code> / <code>dy&gt;0.06</code>).
+              Múltiplo fica literal: <code>pl&lt;12</code>. Disponíveis:{" "}
               <span className="font-mono">{metricas.map(([n]) => n).join(", ") || "—"}</span>.
             </p>
             {crus.map((c, i) => (

@@ -36,6 +36,9 @@ class TeseIn(BaseModel):
     resumo: str
     pilares: list[PilarIn]
     aceitar_quebrado: str | None = None  # motivo, se comprar mesmo com pilar já violado
+    # A meta de yield SÓ desta tese, de onde sai o preço-alvo (teto = provento ÷ meta). Fração,
+    # não %: 0.08 = 8%. Vazio → usa a meta global da classe. NÃO é um pilar — não quebra a tese.
+    meta_yield: float | None = None
 
 
 class ResultadoOut(BaseModel):
@@ -61,6 +64,7 @@ class VeredictoOut(BaseModel):
     preco: float | None = None
     tenho: bool = False                 # está na carteira? senão, é uma tese "de olho"
     compra: CompraOut | None = None     # preço de compra com margem + zona
+    meta_yield: float | None = None     # a meta desta tese (fração) — gera o preço-alvo, edita o form
 
 
 def _texto_pilar(p: tm.Pilar) -> str | None:
@@ -72,6 +76,24 @@ def _texto_pilar(p: tm.Pilar) -> str | None:
     return f"{s}@{p.prazo:%Y-%m}" if p.prazo else s
 
 
+def _meta_efetiva(override: float | None, global_meta: float) -> float:
+    """A meta de yield desta tese: o override que o usuário pediu, ou a meta global da classe.
+
+    É o que separa o PREÇO-ALVO da TESE. O usuário quer "Itaú com pilar dy>6%, mas o preço-alvo
+    calculado a 8%": os 8% entram aqui, os 6% ficam no pilar — e a guarda "nasce quebrada" nunca
+    olha para cá, porque isto não é um pilar. Uma meta fora de (0, 1] não gera teto: recusa cedo.
+    """
+    if override is None:
+        return global_meta
+    if not (0 < override <= 1):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"meta de yield inválida: {override:g}. Use uma fração entre 0 e 1 "
+            "(ex.: 0.08 para 8%).",
+        )
+    return override
+
+
 def _out(
     tese_id: int,
     v: tm.Veredito,
@@ -79,6 +101,7 @@ def _out(
     tenho: bool = False,
     margem: float = 0.15,
     contextos: dict[int, dict] | None = None,
+    meta_yield: float | None = None,
 ) -> VeredictoOut:
     z = zona_de_compra(av, margem) if av else None
     ctx = contextos or {}
@@ -97,12 +120,15 @@ def _out(
         preco=av.preco if av else None,
         tenho=tenho,
         compra=CompraOut.de(z) if z else None,
+        meta_yield=meta_yield,
     )
 
 
-def _traduzir_pilares(pilares_in: list[PilarIn], disponiveis: dict) -> list[tm.Pilar]:
+def _traduzir_pilares(
+    pilares_in: list[PilarIn], disponiveis: dict, percentuais: set[str] | None = None
+) -> list[tm.Pilar]:
     """Traduz os pilares de entrada, RECUSANDO (422) o que não dá para checar — 'vai subir' cai
-    aqui, com a mensagem que ENSINA o que existe."""
+    aqui, com a mensagem que ENSINA o que existe. `percentuais` faz `dy>6` valer 6%, não 600%."""
     pilares: list[tm.Pilar] = []
     for p in pilares_in:
         if p.qualitativo:
@@ -110,7 +136,7 @@ def _traduzir_pilares(pilares_in: list[PilarIn], disponiveis: dict) -> list[tm.P
                                     qualitativo=True, descricao=p.qualitativo))
         elif p.texto:
             try:
-                pilares.append(tm.parse_pilar(p.texto, disponiveis))
+                pilares.append(tm.parse_pilar(p.texto, disponiveis, percentuais))
             except ValueError as e:
                 raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from None
     if not pilares:
@@ -156,13 +182,14 @@ async def _inserir_pilares(c, tese_id: int, pilares: list[tm.Pilar], av) -> None
 async def criar(dados: TeseIn, user_id: uuid.UUID = Depends(usuario_atual)) -> VeredictoOut:
     tk = dados.ticker.upper().strip()
     classe = ab.classificar(tk)
-    meta = await repo.meta_yield(user_id, classe.value)
+    meta = _meta_efetiva(dados.meta_yield, await repo.meta_yield(user_id, classe.value))
     margem = await repo.margem_seguranca(user_id)
     av = avaliador.avaliar(tk, meta)
 
     impl = ab.para(classe)
     disponiveis = impl.metricas_disponiveis() if impl else {}
-    pilares = _traduzir_pilares(dados.pilares, disponiveis)
+    percentuais = impl.metricas_percentuais() if impl else set()
+    pilares = _traduzir_pilares(dados.pilares, disponiveis, percentuais)
     tenho = tk in await repo.tickers_carteira(user_id)
     resumo = _resumo_com_guarda(av, dados.resumo, pilares, dados.aceitar_quebrado, tenho)
 
@@ -177,7 +204,7 @@ async def criar(dados: TeseIn, user_id: uuid.UUID = Depends(usuario_atual)) -> V
         )
         await _inserir_pilares(c, tese_id, pilares, av)
 
-    return _out(tese_id, tm.verificar(av, resumo, pilares), av, tenho, margem)
+    return _out(tese_id, tm.verificar(av, resumo, pilares), av, tenho, margem, meta_yield=meta)
 
 
 @router.put("/{tese_id}", response_model=VeredictoOut)
@@ -188,27 +215,30 @@ async def editar(
     subir', 409 se nascer quebrada). O `AND user_id` garante que ninguém edita a tese de outro."""
     tk = dados.ticker.upper().strip()
     classe = ab.classificar(tk)
-    meta = await repo.meta_yield(user_id, classe.value)
+    meta = _meta_efetiva(dados.meta_yield, await repo.meta_yield(user_id, classe.value))
     margem = await repo.margem_seguranca(user_id)
     av = avaliador.avaliar(tk, meta)
 
     impl = ab.para(classe)
     disponiveis = impl.metricas_disponiveis() if impl else {}
-    pilares = _traduzir_pilares(dados.pilares, disponiveis)
+    percentuais = impl.metricas_percentuais() if impl else set()
+    pilares = _traduzir_pilares(dados.pilares, disponiveis, percentuais)
     tenho = tk in await repo.tickers_carteira(user_id)
     resumo = _resumo_com_guarda(av, dados.resumo, pilares, dados.aceitar_quebrado, tenho)
 
     async with pool().acquire() as c, c.transaction():
+        # Grava a meta junto: editar o preço-alvo é o motivo de muita edição existir.
         r = await c.execute(
-            "UPDATE teses SET resumo = $3 WHERE id = $1 AND user_id = $2 AND encerrada_em IS NULL",
-            tese_id, user_id, resumo,
+            "UPDATE teses SET resumo = $3, meta_yield = $4 "
+            "WHERE id = $1 AND user_id = $2 AND encerrada_em IS NULL",
+            tese_id, user_id, resumo, meta,
         )
         if r.endswith("0"):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "tese não encontrada")
         await c.execute("DELETE FROM tese_pilares WHERE tese_id = $1", tese_id)
         await _inserir_pilares(c, tese_id, pilares, av)
 
-    return _out(tese_id, tm.verificar(av, resumo, pilares), av, tenho, margem)
+    return _out(tese_id, tm.verificar(av, resumo, pilares), av, tenho, margem, meta_yield=meta)
 
 
 @router.get("", response_model=list[VeredictoOut])
@@ -221,6 +251,7 @@ async def checar_todas(user_id: uuid.UUID = Depends(usuario_atual)) -> list[Vere
     margem = await repo.margem_seguranca(user_id)
     carteira = await repo.tickers_carteira(user_id)
     contextos = await repo.contextos_do_usuario(user_id)
+    prefs = await repo.preferencias(user_id)  # fallback para a tese sem meta própria (gravada)
     async with pool().acquire() as c:
         teses = await c.fetch(
             """
@@ -250,12 +281,15 @@ async def checar_todas(user_id: uuid.UUID = Depends(usuario_atual)) -> list[Vere
                 )
                 for p in ps
             ]
-            meta = float(t["meta_yield"]) if t["meta_yield"] else 0.06
+            meta = (
+                float(t["meta_yield"]) if t["meta_yield"] is not None
+                else (prefs.meta_yield_fii if t["classe"] == "FII" else prefs.meta_yield_acao)
+            )
             av = avaliador.avaliar(t["ticker"], meta)
             tenho = t["ticker"] in carteira
             saida.append(
                 _out(t["id"], tm.verificar(av, t["resumo"], pilares), av, tenho, margem,
-                     contextos)
+                     contextos, meta_yield=meta)
             )
     return saida
 

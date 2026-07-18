@@ -122,6 +122,15 @@ class ClasseDeAtivo(ABC):
         **Vazio é uma resposta legítima** — e é a do Bitcoin.
         """
 
+    def metricas_percentuais(self) -> set[str]:
+        """As métricas cujo valor é uma FRAÇÃO exibida em % (`dy`, `payout`, `roe`…).
+
+        Só elas leem um número pelado como porcentagem no pilar: `dy>6` quer dizer 6%, não 600%.
+        Múltiplos (`p_vp`, `pl`), razões (`pl_vs_historia`) e valores em R$ (`dpa`) ficam de fora
+        — ali `pl<12` é 12 mesmo. Vazio por padrão; cada classe declara as suas.
+        """
+        return set()
+
 
 _REGISTRO: dict[Classe, ClasseDeAtivo] = {}
 

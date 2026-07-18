@@ -52,6 +52,11 @@ class FII(ClasseDeAtivo):
             # vacância NÃO entra: a CVM não publica, e o sistema não inventa.
         }
 
+    def metricas_percentuais(self) -> set[str]:
+        # dy e alavancagem são frações exibidas em % → 'dy>8' = 8%. p_vp é múltiplo (~0,9),
+        # dpa/vpa/patrimonio são R$, cotistas é contagem: todos literais.
+        return {"dy", "alavancagem"}
+
     def avaliar(self, ticker: str, preco: float | None, meta_yield: float) -> Avaliacao:
         d = self._painel[self._painel["ticker"] == ticker]
         if d.empty:

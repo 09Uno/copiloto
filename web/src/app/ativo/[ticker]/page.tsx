@@ -21,7 +21,13 @@ export default function AtivoPage({ params }: { params: Promise<{ ticker: string
   const [erro, setErro] = useState<string | null>(null);
   // ?editar=<id> → modo edição: busca a tese e pré-preenche o formulário.
   const [inicial, setInicial] = useState<
-    { teseId: number; resumo: string; textos: string[]; quali: string[] } | null
+    {
+      teseId: number;
+      resumo: string;
+      textos: string[];
+      quali: string[];
+      metaYield?: number | null;
+    } | null
   >(null);
 
   useEffect(() => {
@@ -49,6 +55,7 @@ export default function AtivoPage({ params }: { params: Promise<{ ticker: string
           resumo: t.resumo,
           textos: t.resultados.filter((r) => !r.qualitativo && r.texto).map((r) => r.texto!),
           quali: t.resultados.filter((r) => r.qualitativo).map((r) => r.pilar),
+          metaYield: t.meta_yield,
         });
       })
       .catch(() => {});

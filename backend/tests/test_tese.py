@@ -56,6 +56,23 @@ def test_percentual_e_fracao_significam_a_mesma_coisa():
     assert motor.parse_pilar("payout<0.80", validas).limite == pytest.approx(0.80)
 
 
+def test_numero_pelado_em_metrica_de_pct_e_lido_como_porcentagem():
+    """No texto cru, 'dy>6' quer dizer 6%, não 600% — que é o que a pessoa quase sempre quis.
+    A CLASSE informa quais métricas são de %; o motor não decide isso sozinho."""
+    validas = {"dy": "…", "pl": "…"}
+    pct = {"dy"}  # dy é %, pl é múltiplo
+
+    # número pelado numa métrica de %: vira porcentagem
+    assert motor.parse_pilar("dy>6", validas, pct).limite == pytest.approx(0.06)
+    # fração e explícito continuam iguais — nada quebra
+    assert motor.parse_pilar("dy>0.06", validas, pct).limite == pytest.approx(0.06)
+    assert motor.parse_pilar("dy>6%", validas, pct).limite == pytest.approx(0.06)
+    # múltiplo (não é %) fica LITERAL: pl<12 é 12, não 0,12
+    assert motor.parse_pilar("pl<12", validas, pct).limite == pytest.approx(12)
+    # sem informar 'percentuais', o comportamento antigo é preservado (pelado = literal)
+    assert motor.parse_pilar("dy>6", validas).limite == pytest.approx(6)
+
+
 # --------------------------------------------------------------- a verificação
 
 

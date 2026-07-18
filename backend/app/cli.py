@@ -875,7 +875,8 @@ def tese_criar(
         raise typer.Exit(1)
 
     try:
-        pilares = [motor.parse_pilar(p, disponiveis) for p in pilar]
+        percentuais = impl.metricas_percentuais()
+        pilares = [motor.parse_pilar(p, disponiveis, percentuais) for p in pilar]
     except ValueError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None

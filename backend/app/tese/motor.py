@@ -204,15 +204,25 @@ def _porque_caiu(p: Pilar, valor: float) -> str:
     return f"hoje {valor:g} — você exigia {p.operador} {p.limite:g}{antes}"
 
 
-def parse_pilar(texto: str, metricas_validas: dict[str, str]) -> Pilar:
+def parse_pilar(
+    texto: str,
+    metricas_validas: dict[str, str],
+    percentuais: set[str] | None = None,
+) -> Pilar:
     """Lê 'payout<0.80' e valida contra as métricas que a CLASSE de fato calcula.
 
     **Rejeitar aqui é o ponto.** Um pilar com uma métrica que não existe passaria a vida
     marcado como "não verificável" — silenciosamente inútil. Melhor recusar na hora, dizendo
     o que existe.
 
+    **Número pelado numa métrica de % é lido como %.** `dy>6` quer dizer 6%, não 600% — que é o
+    que a pessoa quase sempre quis. Continua valendo a fração (`dy>0.06`) e o explícito (`dy>6%`);
+    a regra só entra para número ≥ 1 nas métricas de `percentuais` (o motor não decide quais são:
+    a CLASSE informa). Múltiplos ficam literais: `pl<12` é 12. Sem `percentuais`, nada muda.
+
     Aposta em recuperação leva prazo: `divida_ebit<5.0@2028-06`.
     """
+    percentuais = percentuais or set()
     prazo: date | None = None
     if "@" in texto:
         texto, _, quando = texto.partition("@")
@@ -234,10 +244,16 @@ def parse_pilar(texto: str, metricas_validas: dict[str, str]) -> Pilar:
                     f"`{nome}` não é uma métrica desta classe de ativo.\n"
                     f"Disponíveis: {disponiveis}"
                 )
+            bruto = limite.strip()
             try:
-                v = float(limite.strip().rstrip("%")) / (
-                    100.0 if limite.strip().endswith("%") else 1.0
-                )
+                if bruto.endswith("%"):
+                    v = float(bruto[:-1]) / 100.0
+                else:
+                    v = float(bruto)
+                    # '6' numa métrica de % é 6%, não 600%. Só de 1 pra cima — abaixo disso já é
+                    # fração (dy>0.06), e é isso que a pessoa quis dizer.
+                    if nome in percentuais and v >= 1:
+                        v /= 100.0
             except ValueError:
                 raise ValueError(f"limite inválido em `{texto}`") from None
 
