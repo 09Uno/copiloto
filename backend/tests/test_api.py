@@ -160,3 +160,31 @@ def test_editar_tese_substitui_resumo_e_pilares(cliente, logado):
     assert cliente.put("/api/teses/999999999",
                        json={"ticker": "TAEE3", "resumo": "x", "pilares": [{"texto": "dy>5%"}]},
                        headers=logado).status_code == 404
+
+
+def test_tese_de_observacao_nao_dispara_guarda_de_quebrada(cliente, logado):
+    """A guarda 'nasce quebrada' só vale para o que você TEM. Numa tese de observação
+    (watchlist), um pilar ainda não atingido é o MOTIVO de estar de olho, não um defeito."""
+    # dy>50% é impossível para qualquer ação real → pilar sempre 'caído', sem depender do dia.
+    # Sem o ativo na carteira, é observação: entra numa boa.
+    r = cliente.post(
+        "/api/teses",
+        json={"ticker": "ITUB4", "resumo": "de olho, espero yield alto",
+              "pilares": [{"texto": "dy>50%"}]},
+        headers=logado,
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["tenho"] is False
+
+    # O MESMO pilar impossível, mas com o ativo NA carteira: aí a guarda protege (409).
+    cliente.put("/api/carteira/posicao",
+                json={"ticker": "TAEE3", "quantidade": 100, "custo_medio": 13.0},
+                headers=logado)
+    r2 = cliente.post(
+        "/api/teses",
+        json={"ticker": "TAEE3", "resumo": "tenho e comprei por isso",
+              "pilares": [{"texto": "dy>50%"}]},
+        headers=logado,
+    )
+    assert r2.status_code == 409, r2.text
+    assert "nasce quebrada" in r2.text

@@ -120,17 +120,22 @@ def _traduzir_pilares(pilares_in: list[PilarIn], disponiveis: dict) -> list[tm.P
 
 
 def _resumo_com_guarda(av, resumo: str, pilares: list[tm.Pilar],
-                       aceitar_quebrado: str | None) -> str:
-    """Guarda-corpo: 409 se a tese já nasce quebrada, salvo aceite explícito com o porquê."""
-    v0 = tm.verificar(av, resumo, pilares)
-    if v0.cairam and not aceitar_quebrado:
-        quebrados = "; ".join(f"{r.pilar} (hoje {r.valor:g})" for r in v0.cairam)
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            f"Esta tese já nasce quebrada: {quebrados}. "
-            "Ajuste o limite, declare como aposta (metrica<valor@AAAA-MM), ou confirme com "
-            "'aceitar_quebrado' explicando o porquê.",
-        )
+                       aceitar_quebrado: str | None, tenho: bool) -> str:
+    """Guarda-corpo: 409 se a tese já nasce quebrada, salvo aceite explícito com o porquê.
+
+    Só vale para o que você TEM. Uma tese de observação (watchlist, "de olho") é uma lista de
+    condições que você ESPERA — um pilar ainda não atingido (`dy>0.08` com dy hoje em 0.076) não
+    está "quebrado", é justamente o motivo de estar de olho. Aí a guarda só atrapalharia."""
+    if tenho:
+        v0 = tm.verificar(av, resumo, pilares)
+        if v0.cairam and not aceitar_quebrado:
+            quebrados = "; ".join(f"{r.pilar} (hoje {r.valor:g})" for r in v0.cairam)
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"Esta tese já nasce quebrada: {quebrados}. "
+                "Ajuste o limite, declare como aposta (metrica<valor@AAAA-MM), ou confirme com "
+                "'aceitar_quebrado' explicando o porquê.",
+            )
     return resumo + (f"  [pilar quebrado aceito: {aceitar_quebrado}]" if aceitar_quebrado else "")
 
 
@@ -158,7 +163,8 @@ async def criar(dados: TeseIn, user_id: uuid.UUID = Depends(usuario_atual)) -> V
     impl = ab.para(classe)
     disponiveis = impl.metricas_disponiveis() if impl else {}
     pilares = _traduzir_pilares(dados.pilares, disponiveis)
-    resumo = _resumo_com_guarda(av, dados.resumo, pilares, dados.aceitar_quebrado)
+    tenho = tk in await repo.tickers_carteira(user_id)
+    resumo = _resumo_com_guarda(av, dados.resumo, pilares, dados.aceitar_quebrado, tenho)
 
     # --- persiste
     async with pool().acquire() as c, c.transaction():
@@ -171,7 +177,6 @@ async def criar(dados: TeseIn, user_id: uuid.UUID = Depends(usuario_atual)) -> V
         )
         await _inserir_pilares(c, tese_id, pilares, av)
 
-    tenho = tk in await repo.tickers_carteira(user_id)
     return _out(tese_id, tm.verificar(av, resumo, pilares), av, tenho, margem)
 
 
@@ -190,7 +195,8 @@ async def editar(
     impl = ab.para(classe)
     disponiveis = impl.metricas_disponiveis() if impl else {}
     pilares = _traduzir_pilares(dados.pilares, disponiveis)
-    resumo = _resumo_com_guarda(av, dados.resumo, pilares, dados.aceitar_quebrado)
+    tenho = tk in await repo.tickers_carteira(user_id)
+    resumo = _resumo_com_guarda(av, dados.resumo, pilares, dados.aceitar_quebrado, tenho)
 
     async with pool().acquire() as c, c.transaction():
         r = await c.execute(
@@ -202,7 +208,6 @@ async def editar(
         await c.execute("DELETE FROM tese_pilares WHERE tese_id = $1", tese_id)
         await _inserir_pilares(c, tese_id, pilares, av)
 
-    tenho = tk in await repo.tickers_carteira(user_id)
     return _out(tese_id, tm.verificar(av, resumo, pilares), av, tenho, margem)
 
 
