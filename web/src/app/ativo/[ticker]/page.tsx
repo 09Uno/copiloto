@@ -3,7 +3,7 @@
 import { use, useEffect, useState } from "react";
 import { toast } from "sonner";
 
-import { api, type Avaliacao, ApiError } from "@/lib/api";
+import { api, type Avaliacao, type Veredito, ApiError } from "@/lib/api";
 import { brl, pct, corZona, rotuloZona, bordaZona } from "@/lib/formato";
 import { Shell } from "@/components/shell";
 import { TeseForm } from "@/components/tese-form";
@@ -19,6 +19,10 @@ export default function AtivoPage({ params }: { params: Promise<{ ticker: string
 
   const [av, setAv] = useState<Avaliacao | null>(null);
   const [erro, setErro] = useState<string | null>(null);
+  // ?editar=<id> → modo edição: busca a tese e pré-preenche o formulário.
+  const [inicial, setInicial] = useState<
+    { teseId: number; resumo: string; textos: string[]; quali: string[] } | null
+  >(null);
 
   useEffect(() => {
     api
@@ -32,6 +36,24 @@ export default function AtivoPage({ params }: { params: Promise<{ ticker: string
       });
   }, [tk]);
 
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("editar");
+    if (!id) return;
+    api
+      .get<Veredito[]>("/api/teses")
+      .then((ts) => {
+        const t = ts.find((x) => x.tese_id === Number(id));
+        if (!t) return;
+        setInicial({
+          teseId: t.tese_id,
+          resumo: t.resumo,
+          textos: t.resultados.filter((r) => !r.qualitativo && r.texto).map((r) => r.texto!),
+          quali: t.resultados.filter((r) => r.qualitativo).map((r) => r.pilar),
+        });
+      })
+      .catch(() => {});
+  }, []);
+
   return (
     <Shell>
       {av === null ? (
@@ -43,6 +65,26 @@ export default function AtivoPage({ params }: { params: Promise<{ ticker: string
             <span className="text-muted-foreground">{av.classe}</span>
             {av.preco != null && <span className="ml-auto text-xl">{brl(av.preco)}</span>}
           </div>
+
+          {/* Modo edição: mostrado no topo, e mesmo para papel sem-critério (a tese pode ser
+              só qualitativa, como a da AXIA3). */}
+          {inicial && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Editar tese</CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  Ajuste o resumo e os pilares. Os verificáveis aparecem no modo avançado (texto).
+                </p>
+              </CardHeader>
+              <CardContent>
+                <TeseForm
+                  ticker={tk}
+                  metricasVerificaveis={av.metricas_verificaveis}
+                  inicial={inicial}
+                />
+              </CardContent>
+            </Card>
+          )}
 
           {/* A classe que não tem critério ADMITE isso — não inventa um score. */}
           {av.sem_criterio ? (
@@ -132,7 +174,7 @@ export default function AtivoPage({ params }: { params: Promise<{ ticker: string
                 </Card>
               )}
 
-              {Object.keys(av.metricas_verificaveis).length > 0 && (
+              {!inicial && Object.keys(av.metricas_verificaveis).length > 0 && (
                 <Card>
                   <CardHeader>
                     <CardTitle className="text-base">Registrar tese</CardTitle>

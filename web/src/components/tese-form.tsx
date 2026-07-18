@@ -49,18 +49,25 @@ function textoDoGuiado(g: Guiado): string | null {
 export function TeseForm({
   ticker,
   metricasVerificaveis,
+  inicial,
 }: {
   ticker: string;
   metricasVerificaveis: Record<string, string>;
+  // presente = modo EDIÇÃO: pré-preenche e salva com PUT. Os pilares verificáveis vêm no formato
+  // cru ("roe>0.25") no modo avançado — inequívoco, sem o vaivém de %/× do formulário guiado.
+  inicial?: { teseId: number; resumo: string; textos: string[]; quali: string[] };
 }) {
   const router = useRouter();
   const metricas = Object.entries(metricasVerificaveis);
+  const editando = !!inicial;
 
-  const [resumo, setResumo] = useState("");
-  const [guiados, setGuiados] = useState<Guiado[]>([guiadoVazio(metricas[0]?.[0] ?? "")]);
-  const [quali, setQuali] = useState<string[]>([]);
-  const [avancado, setAvancado] = useState(false);
-  const [crus, setCrus] = useState<string[]>([""]);
+  const [resumo, setResumo] = useState(inicial?.resumo ?? "");
+  const [guiados, setGuiados] = useState<Guiado[]>(
+    editando ? [] : [guiadoVazio(metricas[0]?.[0] ?? "")],
+  );
+  const [quali, setQuali] = useState<string[]>(inicial?.quali ?? []);
+  const [avancado, setAvancado] = useState(editando);
+  const [crus, setCrus] = useState<string[]>(inicial?.textos?.length ? inicial.textos : [""]);
   const [enviando, setEnviando] = useState(false);
   const [quebrado, setQuebrado] = useState<string | null>(null);
 
@@ -84,8 +91,13 @@ export function TeseForm({
         ],
         ...(aceitarQuebrado ? { aceitar_quebrado: aceitarQuebrado } : {}),
       };
-      await api.post<Veredito>("/api/teses", corpo);
-      toast.success("tese registrada");
+      if (editando) {
+        await api.put<Veredito>(`/api/teses/${inicial!.teseId}`, corpo);
+        toast.success("tese atualizada");
+      } else {
+        await api.post<Veredito>("/api/teses", corpo);
+        toast.success("tese registrada");
+      }
       router.push("/");
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
@@ -322,7 +334,7 @@ export function TeseForm({
       )}
 
       <Button type="submit" disabled={enviando}>
-        {enviando ? "…" : "Registrar tese"}
+        {enviando ? "…" : editando ? "Atualizar tese" : "Registrar tese"}
       </Button>
     </form>
   );

@@ -132,3 +132,31 @@ def test_a_tese_recusa_metrica_inexistente_e_ENSINA(cliente, logado):
     )
     assert r.status_code == 422
     assert "payout" in r.text  # a mensagem lista o que existe
+
+
+def test_editar_tese_substitui_resumo_e_pilares(cliente, logado):
+    """PUT substitui a tese no lugar — e o veredito traz `texto` (o pilar no formato de edição)."""
+    r = cliente.post(
+        "/api/teses",
+        json={"ticker": "TAEE3", "resumo": "transmissão", "pilares": [{"texto": "dy>7%"}]},
+        headers=logado,
+    )
+    assert r.status_code == 201, r.text
+    tid = r.json()["tese_id"]
+    assert r.json()["resultados"][0]["texto"] == "dy>0.07"   # round-trip do pilar
+
+    r2 = cliente.put(
+        f"/api/teses/{tid}",
+        json={"ticker": "TAEE3", "resumo": "transmissão IPCA",
+              "pilares": [{"texto": "dy>5%"}, {"qualitativo": "RAP indexada ao IPCA"}]},
+        headers=logado,
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["resumo"] == "transmissão IPCA"
+    pilares = [x["pilar"] for x in r2.json()["resultados"]]
+    assert any("RAP indexada" in p for p in pilares)      # o qualitativo novo entrou
+
+    # editar tese inexistente / de outro → 404
+    assert cliente.put("/api/teses/999999999",
+                       json={"ticker": "TAEE3", "resumo": "x", "pilares": [{"texto": "dy>5%"}]},
+                       headers=logado).status_code == 404

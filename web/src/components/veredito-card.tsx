@@ -89,15 +89,23 @@ export function VeredictoCard({
         </ul>
         <div className="pt-2 border-t space-y-2">
           <p className="text-sm italic text-muted-foreground">{v.pergunta}</p>
-          {onEncerrar && (
-            <button
-              type="button"
-              onClick={() => onEncerrar(v)}
-              className="text-xs text-muted-foreground hover:text-[var(--caiu)]"
+          <div className="flex gap-4">
+            <Link
+              href={`/ativo/${v.ticker}?editar=${v.tese_id}`}
+              className="text-xs text-muted-foreground hover:text-foreground"
             >
-              encerrar tese
-            </button>
-          )}
+              editar
+            </Link>
+            {onEncerrar && (
+              <button
+                type="button"
+                onClick={() => onEncerrar(v)}
+                className="text-xs text-muted-foreground hover:text-[var(--caiu)]"
+              >
+                encerrar tese
+              </button>
+            )}
+          </div>
         </div>
       </CardContent>
     </Card>

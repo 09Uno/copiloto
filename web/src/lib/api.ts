@@ -109,6 +109,7 @@ export type Resultado = {
   pilar: string;
   pilar_id: number | null;
   qualitativo: boolean;
+  texto: string | null; // o pilar no formato de entrada ("roe>0.25") — para editar
   estado: "OK" | "CAIU" | "APOSTANDO" | "PERDEU" | "?" | "PERGUNTAR";
   valor: number | null;
   motivo: string | null;

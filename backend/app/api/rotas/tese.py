@@ -42,6 +42,7 @@ class ResultadoOut(BaseModel):
     pilar: str
     pilar_id: int | None = None        # id do pilar — o front usa para buscar contexto
     qualitativo: bool = False          # só nos qualitativos aparece o "buscar o que mudou"
+    texto: str | None = None           # o pilar no formato de entrada ("roe>0.25") — para EDITAR
     estado: str
     valor: float | None
     motivo: str | None
@@ -62,6 +63,15 @@ class VeredictoOut(BaseModel):
     compra: CompraOut | None = None     # preço de compra com margem + zona
 
 
+def _texto_pilar(p: tm.Pilar) -> str | None:
+    """O pilar verificável no formato de ENTRADA — 'roe>0.25', 'cresc_lucro>0@2027-12'. Round-trip
+    com parse_pilar, então serve para pré-preencher o formulário de edição. None se qualitativo."""
+    if p.qualitativo or not p.metrica:
+        return None
+    s = f"{p.metrica}{p.operador}{p.limite:g}"
+    return f"{s}@{p.prazo:%Y-%m}" if p.prazo else s
+
+
 def _out(
     tese_id: int,
     v: tm.Veredito,
@@ -77,6 +87,7 @@ def _out(
         resultados=[
             ResultadoOut(
                 pilar=str(r.pilar), pilar_id=r.pilar.id, qualitativo=r.pilar.qualitativo,
+                texto=_texto_pilar(r.pilar),
                 estado=r.estado.value, valor=r.valor, motivo=r.motivo,
                 contexto=ctx.get(r.pilar.id) if r.pilar.qualitativo else None,
             )
@@ -89,6 +100,53 @@ def _out(
     )
 
 
+def _traduzir_pilares(pilares_in: list[PilarIn], disponiveis: dict) -> list[tm.Pilar]:
+    """Traduz os pilares de entrada, RECUSANDO (422) o que não dá para checar — 'vai subir' cai
+    aqui, com a mensagem que ENSINA o que existe."""
+    pilares: list[tm.Pilar] = []
+    for p in pilares_in:
+        if p.qualitativo:
+            pilares.append(tm.Pilar(id=None, metrica=None, operador=None, limite=None,
+                                    qualitativo=True, descricao=p.qualitativo))
+        elif p.texto:
+            try:
+                pilares.append(tm.parse_pilar(p.texto, disponiveis))
+            except ValueError as e:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from None
+    if not pilares:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "uma tese sem pilares não é uma tese")
+    return pilares
+
+
+def _resumo_com_guarda(av, resumo: str, pilares: list[tm.Pilar],
+                       aceitar_quebrado: str | None) -> str:
+    """Guarda-corpo: 409 se a tese já nasce quebrada, salvo aceite explícito com o porquê."""
+    v0 = tm.verificar(av, resumo, pilares)
+    if v0.cairam and not aceitar_quebrado:
+        quebrados = "; ".join(f"{r.pilar} (hoje {r.valor:g})" for r in v0.cairam)
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Esta tese já nasce quebrada: {quebrados}. "
+            "Ajuste o limite, declare como aposta (metrica<valor@AAAA-MM), ou confirme com "
+            "'aceitar_quebrado' explicando o porquê.",
+        )
+    return resumo + (f"  [pilar quebrado aceito: {aceitar_quebrado}]" if aceitar_quebrado else "")
+
+
+async def _inserir_pilares(c, tese_id: int, pilares: list[tm.Pilar], av) -> None:
+    for p in pilares:
+        await c.execute(
+            """
+            INSERT INTO tese_pilares
+                (tese_id, metrica, operador, limite, valor_na_criacao, qualitativo, descricao, prazo)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            """,
+            tese_id, p.metrica, p.operador, p.limite,
+            av.metrica(p.metrica) if p.metrica else None, p.qualitativo, p.descricao, p.prazo,
+        )
+
+
 @router.post("", response_model=VeredictoOut, status_code=201)
 async def criar(dados: TeseIn, user_id: uuid.UUID = Depends(usuario_atual)) -> VeredictoOut:
     tk = dados.ticker.upper().strip()
@@ -99,38 +157,8 @@ async def criar(dados: TeseIn, user_id: uuid.UUID = Depends(usuario_atual)) -> V
 
     impl = ab.para(classe)
     disponiveis = impl.metricas_disponiveis() if impl else {}
-
-    # --- traduz os pilares, RECUSANDO os que não dão para checar
-    pilares: list[tm.Pilar] = []
-    for p in dados.pilares:
-        if p.qualitativo:
-            pilares.append(tm.Pilar(id=None, metrica=None, operador=None, limite=None,
-                                    qualitativo=True, descricao=p.qualitativo))
-        elif p.texto:
-            try:
-                pilares.append(tm.parse_pilar(p.texto, disponiveis))
-            except ValueError as e:
-                # 422 com a mensagem que ENSINA o que existe — "vai subir" cai aqui.
-                raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from None
-
-    if not pilares:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            "uma tese sem pilares não é uma tese")
-
-    # --- guarda-corpo: tese que já nasce quebrada
-    v0 = tm.verificar(av, dados.resumo, pilares)
-    if v0.cairam and not dados.aceitar_quebrado:
-        quebrados = "; ".join(f"{r.pilar} (hoje {r.valor:g})" for r in v0.cairam)
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            f"Esta tese já nasce quebrada: {quebrados}. "
-            "Ajuste o limite, declare como aposta (metrica<valor@AAAA-MM), ou confirme com "
-            "'aceitar_quebrado' explicando o porquê.",
-        )
-
-    resumo = dados.resumo
-    if dados.aceitar_quebrado:
-        resumo += f"  [pilar quebrado aceito: {dados.aceitar_quebrado}]"
+    pilares = _traduzir_pilares(dados.pilares, disponiveis)
+    resumo = _resumo_com_guarda(av, dados.resumo, pilares, dados.aceitar_quebrado)
 
     # --- persiste
     async with pool().acquire() as c, c.transaction():
@@ -141,18 +169,38 @@ async def criar(dados: TeseIn, user_id: uuid.UUID = Depends(usuario_atual)) -> V
             """,
             user_id, tk, classe.value, resumo, meta, av.preco,
         )
-        for p in pilares:
-            await c.execute(
-                """
-                INSERT INTO tese_pilares
-                    (tese_id, metrica, operador, limite, valor_na_criacao, qualitativo,
-                     descricao, prazo)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                """,
-                tese_id, p.metrica, p.operador, p.limite,
-                av.metrica(p.metrica) if p.metrica else None,
-                p.qualitativo, p.descricao, p.prazo,
-            )
+        await _inserir_pilares(c, tese_id, pilares, av)
+
+    tenho = tk in await repo.tickers_carteira(user_id)
+    return _out(tese_id, tm.verificar(av, resumo, pilares), av, tenho, margem)
+
+
+@router.put("/{tese_id}", response_model=VeredictoOut)
+async def editar(
+    tese_id: int, dados: TeseIn, user_id: uuid.UUID = Depends(usuario_atual)
+) -> VeredictoOut:
+    """Substitui o resumo e os pilares de uma tese existente. Mesmas travas do criar (recusa 'vai
+    subir', 409 se nascer quebrada). O `AND user_id` garante que ninguém edita a tese de outro."""
+    tk = dados.ticker.upper().strip()
+    classe = ab.classificar(tk)
+    meta = await repo.meta_yield(user_id, classe.value)
+    margem = await repo.margem_seguranca(user_id)
+    av = avaliador.avaliar(tk, meta)
+
+    impl = ab.para(classe)
+    disponiveis = impl.metricas_disponiveis() if impl else {}
+    pilares = _traduzir_pilares(dados.pilares, disponiveis)
+    resumo = _resumo_com_guarda(av, dados.resumo, pilares, dados.aceitar_quebrado)
+
+    async with pool().acquire() as c, c.transaction():
+        r = await c.execute(
+            "UPDATE teses SET resumo = $3 WHERE id = $1 AND user_id = $2 AND encerrada_em IS NULL",
+            tese_id, user_id, resumo,
+        )
+        if r.endswith("0"):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "tese não encontrada")
+        await c.execute("DELETE FROM tese_pilares WHERE tese_id = $1", tese_id)
+        await _inserir_pilares(c, tese_id, pilares, av)
 
     tenho = tk in await repo.tickers_carteira(user_id)
     return _out(tese_id, tm.verificar(av, resumo, pilares), av, tenho, margem)
